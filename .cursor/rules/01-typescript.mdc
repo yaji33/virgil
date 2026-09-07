@@ -1,0 +1,29 @@
+---
+description: TypeScript and code style conventions
+globs: ["**/*.ts", "**/*.tsx"]
+alwaysApply: false
+---
+
+# TypeScript Conventions
+
+- Target: ES2022+, Node.js 22+
+- Strict mode enabled
+- Prefer `interface` for object shapes that may be extended; `type` for unions and mapped types
+- Use `readonly` and `as const` where appropriate
+- Export types from `src/types/`
+- All public functions must have explicit return types
+- Prefer named exports over default exports for modules
+
+## Error Handling
+
+- Use custom error classes that extend `Error` (e.g. `PolicyViolationError`, `RiskEvaluationError`)
+- Never swallow errors silently
+- Prefer Result-style returns (`{ ok: true, value } | { ok: false, error }`) for expected failure paths in the policy engine
+
+## Naming
+
+- Files: kebab-case
+- Types/Interfaces: PascalCase
+- Functions/variables: camelCase
+- Constants: SCREAMING_SNAKE_CASE
+- Risk agents: `evaluatePositionSize`, `evaluateConcentration`, etc.

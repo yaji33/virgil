@@ -1,0 +1,35 @@
+---
+description: Testing standards and edge-case requirements
+globs: ["**/tests/**", "**/*.test.ts", "**/*.spec.ts"]
+alwaysApply: false
+---
+
+# Testing Rules
+
+- Framework: Vitest
+- Every pure function in `src/policy/` and `src/risk/` must have unit tests
+- Cover both happy path and edge cases
+
+## Required Edge Cases (must be tested)
+
+- Zero / dust amounts
+- Exactly at limit boundaries (maxPositionSize, maxDailyLoss, maxConcentration)
+- Assets not in allowlist
+- Futures when only SPOT is allowed
+- Missing or stale market data
+- Concurrent / rapid proposals
+- Malformed proposals
+- Empty mandate / missing required fields
+- Extreme volatility spikes
+- Partial fill scenarios (when relevant)
+
+## Test Structure
+
+- Use `describe` / `it` blocks
+- Prefer table-driven tests for rule permutations
+- Mock MCP client in integration tests
+- Demo Mode and Live Mode should share the same core test suite where possible
+
+## Coverage Expectation
+
+Aim for high coverage on policy and risk modules. Core decision path must be fully covered.

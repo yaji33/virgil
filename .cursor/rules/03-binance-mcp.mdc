@@ -1,0 +1,36 @@
+---
+description: Binance Agent OS and MCP integration rules
+globs: ["src/mcp/**", "**/mcp/**"]
+alwaysApply: false
+---
+
+# Binance MCP & Agent OS Rules
+
+## Official Endpoint
+
+- MCP Server: `https://agent.binance.com/mcp/agentic`
+- Prefer the official Binance MCP over third-party wrappers when possible.
+
+## Key Constraints
+
+- All trading activity must target the **Agentic sub-account** only.
+- No external withdrawals are allowed through this system.
+- Market data can be public (no auth). Account and trading scopes require user authorization.
+- Always respect the scopes the user actually granted.
+
+## Patterns to Follow
+
+- Follow Binance precision rules for quantities and prices.
+- Use proper order types (LIMIT, MARKET, etc.) as supported by the MCP.
+- Handle rate limits and transient errors gracefully.
+- Never assume the sub-account is funded — check balances before proposing size.
+
+## Skills Hub
+
+When richer context is needed (token info, smart-money, audits), prefer installing and using:
+
+```bash
+npx skills add https://github.com/binance/binance-skills-hub
+```
+
+Reference Skills Hub skills instead of reinventing market data fetching when appropriate.

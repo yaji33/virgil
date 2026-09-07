@@ -1,0 +1,39 @@
+---
+description: Core project principles and non-negotiables for Vigil
+alwaysApply: true
+---
+
+# Vigil Core Rules
+
+You are working on **Vigil** — a deterministic policy + multi-agent risk guardian for Binance Agent OS.
+
+## Absolute Priorities
+
+1. **Deterministic over probabilistic** — Policy decisions must be made by pure code (rules engine), never by LLM judgment alone.
+2. **Safety first** — Default to BLOCK or NEEDS_HUMAN when in doubt. Never silently approve.
+3. **Audit everything** — Every proposal, risk assessment, and decision must be logged with a stable auditId.
+4. **Isolation** — Respect Binance Agentic sub-account model. No external withdrawals. Least privilege scopes only.
+5. **Demo Mode is first-class** — The system must be fully usable and testable without any real Binance credentials.
+
+## Architecture Invariants
+
+- Policy engine lives in `src/policy/`
+- Risk agents live in `src/risk/`
+- MCP integration lives in `src/mcp/`
+- Audit trail lives in `src/audit/`
+- Shared types & Zod schemas live in `src/types/`
+
+## Coding Standards
+
+- TypeScript strict mode. No `any`. Prefer `unknown` + narrowing.
+- Use Zod for all external inputs and mandate schemas.
+- Prefer pure functions for policy rules and risk calculations.
+- Keep modules small and focused. One responsibility per file.
+- Write tests for every new pure function and edge case.
+
+## What You Must Never Do
+
+- Never let an LLM directly approve or execute a trade.
+- Never store or log API secrets.
+- Never bypass the policy engine in Live Mode.
+- Never assume market data is always available — handle degraded mode gracefully.
