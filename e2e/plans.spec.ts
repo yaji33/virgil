@@ -146,6 +146,16 @@ test("execution examples and attention stay separate from approval", async ({
   ).toContainText("Example strategy");
 });
 
+test("plans survive reload for the signed-in workspace", async ({ page }) => {
+  await page.goto("/");
+  await createDraft(page);
+  await page.reload();
+  await expect(
+    page.getByRole("heading", { name: "My BTC purchase" }),
+  ).toBeVisible();
+  await expect(page.getByText("Draft created.", { exact: true })).toBeVisible();
+});
+
 test("mobile review layout and keyboard dismissal", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/");
