@@ -13,6 +13,12 @@ export default defineConfig({
     command: "pnpm exec vite web --host 127.0.0.1 --port 5174 --strictPort",
     url: "http://127.0.0.1:5174",
     reuseExistingServer: false,
-    env: { ...process.env, VIRGIL_STORE: "memory" },
+    env: {
+      ...process.env,
+      VIRGIL_STORE: "memory",
+      VIRGIL_EXECUTION: "demo",
+      SUPABASE_URL: "",
+      SUPABASE_PUBLISHABLE_KEY: "",
+    },
   },
 });

@@ -25,7 +25,7 @@ Shared-capital milestone: a consumer plan and an external strategy compete for a
 - Order status is separate from plan status. Submitted does not mean filled.
 - Workspace and integration identifiers are references, not authentication credentials.
 - The server derives actor identity from authentication and checks ownership before domain operations.
-- A database transaction must compare the stored revision and atomically update state. Pure lifecycle functions alone do not prevent concurrent writes or forged records. Local persistence uses Postgres-compatible SQL (PGlite). In-memory JSON remains available for tests.
+- A database transaction must compare the stored revision and atomically update state. Pure lifecycle functions alone do not prevent concurrent writes or forged records. Local persistence uses Postgres-compatible SQL (PGlite). Hosted persistence uses workspace-scoped PostgreSQL transactions and Supabase RLS. In-memory JSON remains available for tests.
 - Exchange metadata determines valid assets, quantities, and order filters.
 - Quote amounts use decimal strings. The initial schema supports up to 20 integer and 18 fractional digits; this is a format boundary, not an exchange limit or risk budget.
 - Exact decimal arithmetic, valuation, fees, precision normalization, and exchange constraints are separate execution requirements. USDT amounts are not implicitly USD amounts.
@@ -36,9 +36,9 @@ Shared-capital milestone: a consumer plan and an external strategy compete for a
 
 The current lifecycle models DRAFT -> IN_REVIEW -> APPROVED. Editing returns a plan to DRAFT with a new revision. Submit is a separate action on an approved revision. Order status is stored independently of plan status.
 
-The application boundary authenticates the actor, scopes workspaces, revalidates the revision and available balance, then calls an execution adapter. The default adapter is demo-only. Live Binance execution is not enabled without credentials.
+The application boundary authenticates the actor, scopes workspaces, and revalidates the revision against a current account snapshot before execution. In hosted mode, Supabase OAuth uses PKCE in the browser. Virgil verifies the resulting access token with Supabase, removes the browser-side Supabase session, and issues a hashed, HttpOnly application session bound to the verified user and workspace. Plan-native policy allows only a one-time USDT spot buy of BTC, ETH, or BNB within available capital; a hard block cannot be overridden by an existing approval. Open unknown and partial orders reserve quote atomically. Fills debit the workspace balance; rejections release the reservation without a debit. The default adapter is demo-only. Live Binance uses spot testnet REST when `VIRGIL_EXECUTION=live` and API keys are configured, and live workspace reads refresh the displayed balance from Binance. A submit acknowledgement is not a receipt; filled status comes from a later order query. Mainnet REST is off unless explicitly enabled.
 
-Before live execution, add policy evaluation against decimal amounts, current account reconciliation, reservations, and a verified exchange adapter. Retain the precise terms, actor, timestamps, and exchange references in durable records.
+An authorized testnet fill and lookup by persisted client order identifier have been verified through the application boundary. A user-completed browser flow remains required before treating Phase 2's no-terminal gate as complete. Retain the precise terms, actor, timestamps, and exchange references in durable records.
 
 ## Initial scope
 

@@ -68,13 +68,14 @@ The domain code is organized into separate modules:
 | Module | Responsibility |
 | --- | --- |
 | `src/plans/` | Validated plan terms, source identity references, revisions, review, and approval transitions |
-| `src/auth/` | Demo sessions and hashed tokens; actor identity is derived from the session |
-| `src/records/` | Transactional persistence for workspaces, accounts, plans, orders, and activity. Local default is Postgres (PGlite); tests can use in-memory JSON |
+| `src/auth/` | Supabase OAuth identity verification, demo sessions, and hashed application tokens; actor identity is derived from the session |
+| `src/records/` | Transactional persistence for workspaces, accounts, plans, orders, and activity. Local default is PGlite; hosted storage uses scoped PostgreSQL transactions |
 | `src/boundary/` | Authenticated workspace operations, account isolation, and revision checks |
 | `src/money/` | Exact decimal-string arithmetic for quote amounts |
 | `src/http/` | Local HTTP adapter used by the browser workspace |
-| `src/execution/` | Submit/reconcile gate and demo exchange adapter. Live Binance stays disabled |
-| `src/policy/` | Deterministic decisions based on mandate rules and supplied risk results |
+| `src/execution/` | Submit/reconcile gate, recovery worker, demo adapter, and optional Binance spot REST adapter. Demo stays the default |
+| `src/capital/` | Available quote, open-order reservations, and account snapshot freshness |
+| `src/policy/` | Deterministic mandate decisions and plan-native execution checks |
 | `src/risk/` | Position-size and available-capital evaluation using supplied exposure |
 | `src/types/` | Shared mandate, proposal, risk-result, and decision schemas |
 
@@ -100,6 +101,7 @@ The plan lifecycle functions remain pure domain operations. The application boun
 | Module configuration | ES modules, ES2022 target, Bundler resolution |
 | Runtime validation | Zod 3 |
 | Local database | PGlite (Postgres-compatible, file-backed under `data/virgil`) |
+| Hosted database and identity | Supabase Postgres, Auth, and Row Level Security |
 | Tests | Vitest 2 |
 | Frontend | TypeScript, CSS, Vite 5 |
 | Browser tests | Playwright |
@@ -120,7 +122,25 @@ pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-Open `http://127.0.0.1:5173` to create, review, approve, submit, and reconcile a plan. The page opens a local demo session with no Binance credentials. Approval does not place an order. Submit uses the demo adapter; reconcile records a labelled receipt without moving funds. Plans, orders, activity, and the illustrative USDT balance are stored in a local Postgres database (`data/virgil`) and survive refresh.
+Open `http://127.0.0.1:5173` to create, review, approve, submit, and reconcile a plan. The page opens a local demo session with no Binance credentials. Approval does not place an order. Submit uses the demo adapter and reserves quote until the order fills or is rejected. A demo fill updates the illustrative workspace balance; it is still not a Binance confirmation. Plans, orders, activity, and the illustrative USDT balance are stored in a local Postgres database (`data/virgil`) and survive refresh.
+
+Optional Binance spot testnet: copy `.env.example` to `.env`, set `VIRGIL_EXECUTION=live`, and add spot-trade-only keys. Demo remains the default when those values are unset. Submit acknowledgements are not receipts; reconcile queries Binance before recording a fill. Signed requests correct local clock drift from Binance server time after a timestamp rejection. Mainnet REST stays off unless `VIRGIL_BINANCE_REAL=yes`.
+
+Hosted Supabase mode requires `VIRGIL_STORE=postgres`, the project URL and publishable key, both PostgreSQL URLs, and the local path to the project CA certificate. Keep the secret key and database URLs on the backend. Apply migrations before starting the app:
+
+```sh
+pnpm migrate
+pnpm smoke:postgres
+pnpm server
+```
+
+The standalone backend listens on `127.0.0.1:8787` by default. Put it behind the same HTTPS origin as the frontend in deployment. The Vite development server continues to embed the API for local work.
+
+Hosted sign-in uses Supabase OAuth with PKCE. Set `VIRGIL_OAUTH_PROVIDERS=google` or a comma-separated list containing `google` and `github`. In Supabase, enable each provider under Authentication > Providers and add `http://127.0.0.1:5173/` to Authentication > URL Configuration > Redirect URLs. In the provider console, use `https://<project-ref>.supabase.co/auth/v1/callback` as the authorized callback URL. The browser receives the Supabase project URL and publishable key, which are public client configuration. The database URLs and any secret key must never be exposed to the browser.
+
+An account is required in hosted mode because plans, approvals, receipts, and execution authority must have a stable owner for tenant isolation. The default local demo remains account-free.
+
+To import a local workspace, first create or identify its destination Supabase user. Set `VIRGIL_MIGRATION_USER_ID` and, when more than one local workspace exists, `VIRGIL_MIGRATION_WORKSPACE_ID`, then run `pnpm migrate:local`. The importer preserves plans, orders, activity, and immutable history. It does not copy local application sessions.
 
 For the command-line lifecycle example, run `pnpm demo:plans`.
 
@@ -142,6 +162,10 @@ These demonstrate an allowed purchase, a disallowed asset, a human-approval thre
 | `pnpm preview` | Preview the built frontend on port 4173 |
 | `pnpm demo:plans` | Run the local plan lifecycle example |
 | `pnpm demo` | Run the deterministic policy examples |
+| `pnpm migrate` | Apply pending reviewed migrations through `DIRECT_URL` |
+| `pnpm smoke:postgres` | Verify hosted persistence and tenant isolation with temporary records |
+| `pnpm migrate:local` | Import one local workspace for an explicit Supabase user |
+| `pnpm server` | Run the standalone Virgil backend on port 8787 |
 | `pnpm lint` | Check TypeScript without emitting files |
 | `pnpm test` | Run the test suite once |
 | `pnpm test:watch` | Run tests in watch mode |
@@ -150,26 +174,32 @@ These demonstrate an allowed purchase, a disallowed asset, a human-approval thre
 
 ## Tests
 
-Verified on September 8, 2026, using Node.js 22.20.0:
+Verified on September 9, 2026, using Node.js 22.20.0:
 
 | Check | Result |
 | --- | --- |
 | TypeScript check | Passed |
 | Plan tests | 19 passed |
 | Policy tests | 6 passed |
-| Workspace tests | 8 passed |
-| Boundary tests | 7 passed |
-| HTTP tests | 1 passed |
-| Execution tests | 14 passed |
-| SQL record tests | 3 passed |
-| Unit total | 58 passed across 7 test files |
-| Browser tests | 7 passed in installed Chrome, including a mobile viewport |
+| Execution policy tests | 3 passed |
+| Capital tests | 2 passed |
+| Binance adapter tests | 15 passed |
+| Workspace tests | 9 passed |
+| Boundary tests | 9 passed |
+| Auth tests | 2 passed |
+| HTTP tests | 2 passed |
+| Execution tests | 27 passed |
+| SQL record tests | 5 passed |
+| Unit total | 99 passed across 11 test files |
+| Browser tests | 9 passed in installed Chrome, including hosted OAuth choices and a mobile viewport |
 
-The suite covers consumer and integration plan sources, revision-bound approval, approval invalidation, stale revisions, invalid transitions, SQL revision CAS, persisted reload, input-copy behavior, decimal-string validation, asset and product restrictions, position limits, and risk-failure precedence.
+The suite covers consumer and integration plan sources, revision-bound approval, approval invalidation, stale revisions, invalid transitions, SQL revision CAS, persisted reload, immutable plan history, Supabase OAuth configuration and access-token verification, authenticated workspace separation, HttpOnly application sessions, input-copy behavior, decimal-string validation, asset and product restrictions, position limits, and risk-failure precedence.
 
-Execution regressions cover durable attempts before adapter calls, concurrent submission blocking, rejection retries, uncertain responses, acknowledged demo-order recovery, retained execution terms, and reconciliation quantity and identity checks. An unresolved attempt blocks another submission even if the plan is revised.
+Execution regressions cover durable attempts before adapter calls, concurrent submission blocking, rejection retries, uncertain responses, lost-acknowledgement recovery, lookup misses, concurrent worker leases, expired leases, late-result protection, worker shutdown, retained execution terms, and reconciliation quantity and identity checks. An unresolved attempt stays reconcitable after the plan is revised and still blocks another submission. Quote reservations prevent overlapping submits from spending the same funds. Fills debit the illustrative balance; rejections restore available capital. Approve and submit require a current account snapshot and re-run plan-native execution policy, including a hard block for disallowed assets. Binance adapter tests cover HMAC signing, status mapping, submit-ack as unknown, query-backed receipts, free USDT snapshots, clock synchronization, and mainnet refusal without an explicit flag.
 
-Browser tests cover revision and approval, capital-conflict resizing, demo submit and reconcile, labelled snapshot examples, validation, escaped user input, keyboard dismissal, reload persistence, and mobile overflow. These tests do not establish live exchange integration or trading performance.
+An authorized 10 USDT BTC spot testnet plan was also completed through Virgil's application boundary on September 8, 2026. Binance order `13494676` produced receipt `binance-13494676`, and lookup by its persisted client order identifier returned the same filled order. This establishes exchange-backed execution and recovery evidence; it does not replace the remaining user-completed browser acceptance run.
+
+Browser tests cover revision and approval, inspectable revision history, capital-conflict resizing, demo submit and reconcile, reconciliation after a revision, labelled snapshot examples, validation, escaped user input, keyboard dismissal, reload persistence, and mobile overflow. These tests do not establish live exchange integration or trading performance.
 
 Reproduce the checks with:
 
