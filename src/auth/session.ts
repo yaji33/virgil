@@ -40,8 +40,16 @@ export function isExpired(expiresAt: string, now = Date.now()): boolean {
   return Date.parse(expiresAt) <= now;
 }
 
-export function cookieHeader(token: string): string {
-  return `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_MS / 1000}`;
+export function cookieHeader(
+  token: string,
+  secure = false,
+  maxAgeSeconds = SESSION_MS / 1000,
+): string {
+  return `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSeconds}${secure ? "; Secure" : ""}`;
+}
+
+export function clearCookieHeader(secure = false): string {
+  return `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure ? "; Secure" : ""}`;
 }
 
 export function readCookie(header: string | undefined): string | undefined {

@@ -16,10 +16,16 @@ const orderFields = {
   planId: z.string().uuid(),
   planRevision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   approvedPlan: PlanSchema.optional(),
-  environment: z.literal("DEMO"),
+  environment: z.enum(["DEMO", "LIVE"]),
   exchangeOrderId: z.string().trim().min(1).max(128),
   submittedAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
+  recovery: z.object({
+    attempts: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    nextAttemptAt: z.string().datetime(),
+    lease: z.object({ id: z.string().uuid(), expiresAt: z.string().datetime() }).strict().optional(),
+    lastError: z.enum(["LOOKUP_FAILED", "LOOKUP_TIMEOUT"]).optional(),
+  }).strict().optional(),
 };
 
 export const OrderSchema = z.discriminatedUnion("status", [

@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { cookieHeader, readCookie } from "../auth/session.js";
+import { clearCookieHeader, cookieHeader, readCookie } from "../auth/session.js";
+import type { SupabaseAuth } from "../auth/supabase.js";
 import { BoundaryError } from "../boundary/errors.js";
 import { WorkspaceBoundary } from "../boundary/workspace.js";
 import { PlanTermsSchema } from "../plans/plan.js";
@@ -40,8 +41,17 @@ function fail(res: ServerResponse, error: unknown): void {
     send(res, error.status, { error: { code: error.code, message: error.message } });
     return;
   }
+  const details = error as { code?: unknown; name?: unknown };
+  const name = typeof details.name === "string" ? details.name : "error";
+  const code = typeof details.code === "string" ? details.code : undefined;
+  console.error(
+    `Workspace API failed (${name}${code ? `, code ${code}` : ""}).`,
+  );
   send(res, 500, {
-    error: { code: "INTERNAL", message: "Unable to update the workspace." },
+    error: {
+      code: "INTERNAL",
+      message: `Unable to update the workspace (${name}${code ? `, code ${code}` : ""}).`,
+    },
   });
 }
 
@@ -49,13 +59,55 @@ export async function handleApi(
   req: IncomingMessage,
   res: ServerResponse,
   boundary: WorkspaceBoundary,
+  auth?: SupabaseAuth,
 ): Promise<boolean> {
   const host = req.headers.host ?? "127.0.0.1";
   const url = new URL(req.url ?? "/", `http://${host}`);
   if (!url.pathname.startsWith("/api/")) return false;
   const token = readCookie(req.headers.cookie);
+  const secureCookie = process.env.NODE_ENV === "production";
   try {
+    if (url.pathname === "/api/health" && req.method === "GET") {
+      send(res, 200, { status: "ok" });
+      return true;
+    }
+    if (url.pathname === "/api/auth/config" && req.method === "GET") {
+      if (!auth) throw new BoundaryError("Supabase Auth is not configured.", 404, "NOT_FOUND");
+      send(res, 200, auth.publicConfig());
+      return true;
+    }
+    if (url.pathname === "/api/auth/exchange" && req.method === "POST") {
+      if (!auth) throw new BoundaryError("Supabase Auth is not configured.", 404, "NOT_FOUND");
+      const body = (await readJson(req)) as { accessToken?: unknown };
+      if (typeof body.accessToken !== "string" || !body.accessToken) {
+        throw new BoundaryError("OAuth access token is required.", 400, "INVALID");
+      }
+      const identity = await auth.verifyAccessToken(body.accessToken).catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : "OAuth session could not be verified.";
+        throw new BoundaryError(message, 401, "UNAUTHORIZED");
+      });
+      const sessionSeconds = Math.floor(identity.sessionSeconds ?? 3600);
+      await boundary.closeSession(token);
+      const session = await boundary.openAuthenticatedSession(
+        identity.userId,
+        undefined,
+        new Date(Date.now() + sessionSeconds * 1000).toISOString(),
+      );
+      res.setHeader("Set-Cookie", cookieHeader(session.token, secureCookie, sessionSeconds));
+      send(res, 200, { actor: session.actor });
+      return true;
+    }
+    if (url.pathname === "/api/auth/sign-out" && req.method === "POST") {
+      await boundary.closeSession(token);
+      res.setHeader("Set-Cookie", clearCookieHeader(secureCookie));
+      send(res, 200, { signedOut: true });
+      return true;
+    }
     if (url.pathname === "/api/session" && req.method === "POST") {
+      if (auth) {
+        send(res, 200, { actor: await boundary.currentSession(token) });
+        return true;
+      }
       const session = await boundary.openSession(token);
       res.setHeader("Set-Cookie", cookieHeader(session.token));
       send(res, 200, { actor: session.actor });

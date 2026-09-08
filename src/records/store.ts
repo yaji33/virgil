@@ -1,4 +1,5 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile, rename } from "node:fs/promises";
+import { assertImmutableRecords } from "./immutable.js";
 import { dirname } from "node:path";
 import {
   DatabaseSchema,
@@ -7,9 +8,14 @@ import {
 } from "./schema.js";
 
 export interface Records {
-  transaction<T>(fn: (db: Database) => T): Promise<T>;
+  transaction<T>(fn: (db: Database) => T, scope?: RecordScope): Promise<T>;
   close(): Promise<void>;
 }
+
+export type RecordScope =
+  | { tokenHash: string }
+  | { userId: string }
+  | { workspaceId: string };
 
 export class RecordStore implements Records {
   private data: Database;
@@ -46,13 +52,15 @@ export class RecordStore implements Records {
     return Promise.resolve();
   }
 
-  transaction<T>(fn: (db: Database) => T): Promise<T> {
+  transaction<T>(fn: (db: Database) => T, _scope?: RecordScope): Promise<T> {
     const run = this.chain.then(async () => {
       const draft = structuredClone(this.data);
       const result = fn(draft);
-      this.data = DatabaseSchema.parse(draft);
-      await this.persist();
-      return result;
+      const validated = DatabaseSchema.parse(draft);
+      assertImmutableRecords(this.data, validated);
+      await this.persist(validated);
+      this.data = validated;
+      return structuredClone(result);
     });
     this.chain = run.then(
       () => undefined,
@@ -61,9 +69,11 @@ export class RecordStore implements Records {
     return run;
   }
 
-  private async persist(): Promise<void> {
+  private async persist(data: Database): Promise<void> {
     if (!this.filePath) return;
     await mkdir(dirname(this.filePath), { recursive: true });
-    await writeFile(this.filePath, `${JSON.stringify(this.data, null, 2)}\n`);
+    const temporary = `${this.filePath}.tmp`;
+    await writeFile(temporary, `${JSON.stringify(data, null, 2)}\n`);
+    await rename(temporary, this.filePath);
   }
 }

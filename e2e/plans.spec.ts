@@ -27,6 +27,8 @@ test("create, approve, revise, and approve the new terms", async ({ page }) => {
   await expect(
     page.getByRole("heading", { name: "Terms approved. You’re in control." }),
   ).toBeVisible();
+  await page.getByText("Revision and approval history").click();
+  await expect(page.getByText("Revision 1: Terms approved")).toBeVisible();
   await page.getByRole("button", { name: "Edit plan", exact: true }).click();
   await page.getByLabel("Amount in USDT").fill("200");
   await page.getByRole("button", { name: "Save new revision" }).click();
@@ -44,6 +46,25 @@ test("create, approve, revise, and approve the new terms", async ({ page }) => {
     }),
   ).toBeVisible();
   expect(errors).toEqual([]);
+});
+
+test("an unresolved order can be reconciled after the plan is revised", async ({ page }) => {
+  await page.goto("/");
+  await createDraft(page);
+  await page.getByRole("button", { name: "Review this plan" }).click();
+  await page.getByRole("button", { name: "Approve purchase of 250 USDT of BTC" }).click();
+  await page.getByRole("button", { name: "Submit purchase of 250 USDT of BTC" }).click();
+  await page.getByRole("button", { name: "Edit plan", exact: true }).click();
+  await page.getByLabel("Amount in USDT").fill("200");
+  await page.getByRole("button", { name: "Save new revision" }).click();
+  await expect(page.getByRole("button", { name: "Reconcile order" })).toBeVisible();
+  await page.getByText("Revision and approval history").click();
+  await expect(
+    page.locator(".history-list li").filter({ hasText: "Revision 1: Terms approved" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Reconcile order" }).click();
+  await expect(page.getByRole("heading", { name: "Verified demo receipt." })).toBeVisible();
+  await expect(page.getByText("250 USDT filled for revision 1.")).toBeVisible();
 });
 
 test("conflict blocks approval and resizing requires another review", async ({
@@ -183,4 +204,26 @@ test("mobile review layout and keyboard dismissal", async ({ page }) => {
     path: "test-results/review-mobile.png",
     fullPage: true,
   });
+});
+
+test("shows configured OAuth providers when the hosted session is missing", async ({ page }) => {
+  await page.route("**/api/session", (route) => route.fulfill({
+    status: 401,
+    contentType: "application/json",
+    body: JSON.stringify({ error: { code: "UNAUTHORIZED", message: "Sign in to continue." } }),
+  }));
+  await page.route("**/api/auth/config", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({
+      url: "https://project.supabase.co",
+      publishableKey: "sb_publishable_test",
+      providers: ["google", "github"],
+    }),
+  }));
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "Continue to Virgil." })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Continue with Google" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Continue with GitHub" })).toBeVisible();
+  await expect(page.getByText("Local demo mode remains account-free.")).toBeVisible();
 });

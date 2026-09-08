@@ -15,16 +15,21 @@ import {
   type SessionRecord,
   type WorkspaceRecord,
 } from "./schema.js";
-import type { Records } from "./store.js";
+import type { Records, RecordScope } from "./store.js";
+import { assertImmutableRecords } from "./immutable.js";
+import { PlanHistorySchema } from "../plans/history.js";
+import { DemoOrderRecordSchema } from "../execution/demo-record.js";
 
-const SCHEMA = `
+export const LOCAL_SCHEMA = `
 CREATE TABLE IF NOT EXISTS workspaces (
   id TEXT PRIMARY KEY,
   account_id TEXT NOT NULL,
   quote_asset TEXT NOT NULL,
   balance TEXT NOT NULL,
-  example_hold TEXT NOT NULL
+  example_hold TEXT NOT NULL,
+  captured_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z'
 );
+ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS captured_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z';
 CREATE TABLE IF NOT EXISTS memberships (
   user_id TEXT NOT NULL,
   workspace_id TEXT NOT NULL REFERENCES workspaces(id),
@@ -60,10 +65,38 @@ CREATE TABLE IF NOT EXISTS activity (
   message TEXT NOT NULL,
   time TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS plan_history (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+  plan_id TEXT NOT NULL REFERENCES plans(id),
+  body JSONB NOT NULL
+);
+CREATE TABLE IF NOT EXISTS demo_orders (
+  id TEXT PRIMARY KEY,
+  body JSONB NOT NULL
+);
+CREATE OR REPLACE FUNCTION reject_record_change() RETURNS trigger AS $$
+BEGIN
+  RAISE EXCEPTION 'Records are immutable';
+END;
+$$ LANGUAGE plpgsql;
+CREATE OR REPLACE TRIGGER immutable_plan_history
+  BEFORE UPDATE OR DELETE ON plan_history FOR EACH ROW EXECUTE FUNCTION reject_record_change();
+CREATE OR REPLACE TRIGGER immutable_demo_orders
+  BEFORE UPDATE OR DELETE ON demo_orders FOR EACH ROW EXECUTE FUNCTION reject_record_change();
 `;
 
-type Queryable = {
-  query: PGlite["query"];
+export type QueryResult<T> = {
+  rows: T[];
+  affectedRows?: number;
+  rowCount?: number | null;
+};
+
+export type Queryable = {
+  query<T extends object = Record<string, unknown>>(
+    query: string,
+    params?: unknown[],
+  ): Promise<QueryResult<T>>;
 };
 
 type WorkspaceRow = {
@@ -72,6 +105,7 @@ type WorkspaceRow = {
   quote_asset: unknown;
   balance: unknown;
   example_hold: unknown;
+  captured_at: unknown;
 };
 
 type MembershipRow = { user_id: unknown; workspace_id: unknown };
@@ -106,7 +140,7 @@ function same(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
-function touched(result: { affectedRows?: number; rowCount?: number }): number {
+function touched(result: { affectedRows?: number; rowCount?: number | null }): number {
   return result.affectedRows ?? result.rowCount ?? 0;
 }
 
@@ -114,25 +148,42 @@ function byId<T extends { id: string }>(items: T[]): Map<string, T> {
   return new Map(items.map((item) => [item.id, item]));
 }
 
-async function loadDatabase(tx: Queryable): Promise<Database> {
+export async function loadDatabase(
+  tx: Queryable,
+  workspaceId?: string,
+): Promise<Database> {
+  const where = workspaceId ? " WHERE workspace_id = $1" : "";
+  const workspaceWhere = workspaceId ? " WHERE id = $1" : "";
+  const params = workspaceId ? [workspaceId] : undefined;
   const workspaces = await tx.query<WorkspaceRow>(
-    "SELECT id, account_id, quote_asset, balance, example_hold FROM workspaces FOR UPDATE",
+    `SELECT id, account_id, quote_asset, balance, example_hold, captured_at FROM workspaces${workspaceWhere} FOR UPDATE`,
+    params,
   );
   const memberships = await tx.query<MembershipRow>(
-    "SELECT user_id, workspace_id FROM memberships FOR UPDATE",
+    `SELECT user_id, workspace_id FROM memberships${where} FOR UPDATE`,
+    params,
   );
   const sessions = await tx.query<SessionRow>(
-    "SELECT id, token_hash, user_id, workspace_id, created_at, expires_at FROM sessions FOR UPDATE",
+    `SELECT id, token_hash, user_id, workspace_id, created_at, expires_at FROM sessions${where} FOR UPDATE`,
+    params,
   );
   const plans = await tx.query<PlanRow>(
-    "SELECT id, workspace_id, revision, body FROM plans FOR UPDATE",
+    `SELECT id, workspace_id, revision, body FROM plans${where} FOR UPDATE`,
+    params,
   );
   const orders = await tx.query<OrderRow>(
-    "SELECT id, workspace_id, plan_id, status, body FROM orders FOR UPDATE",
+    `SELECT id, workspace_id, plan_id, status, body FROM orders${where} FOR UPDATE`,
+    params,
   );
   const activity = await tx.query<ActivityRow>(
-    "SELECT id, workspace_id, plan_id, title, revision, message, time FROM activity ORDER BY time DESC",
+    `SELECT id, workspace_id, plan_id, title, revision, message, time FROM activity${where} ORDER BY time DESC`,
+    params,
   );
+  const history = await tx.query<{ body: unknown }>(
+    `SELECT body FROM plan_history${where} ORDER BY body->>'recordedAt', id`,
+    params,
+  );
+  const demoOrders = await tx.query<{ body: unknown }>("SELECT body FROM demo_orders");
   return DatabaseSchema.parse({
     version: 1,
     workspaces: workspaces.rows.map((row) =>
@@ -144,6 +195,7 @@ async function loadDatabase(tx: Queryable): Promise<Database> {
           workspaceId: row.id,
           quoteAsset: row.quote_asset,
           balance: row.balance,
+          capturedAt: row.captured_at || "1970-01-01T00:00:00.000Z",
         },
       }),
     ),
@@ -165,6 +217,8 @@ async function loadDatabase(tx: Queryable): Promise<Database> {
     ),
     plans: plans.rows.map((row) => PlanSchema.parse(jsonValue(row.body))),
     orders: orders.rows.map((row) => OrderSchema.parse(jsonValue(row.body))),
+    planHistory: history.rows.map((row) => PlanHistorySchema.parse(jsonValue(row.body))),
+    demoOrders: demoOrders.rows.map((row) => DemoOrderRecordSchema.parse(jsonValue(row.body))),
     activity: activity.rows.map((row) =>
       ActivityRecordSchema.parse({
         id: row.id,
@@ -179,7 +233,12 @@ async function loadDatabase(tx: Queryable): Promise<Database> {
   });
 }
 
-async function persist(tx: Queryable, loaded: Database, draft: Database): Promise<void> {
+export async function persistDatabase(
+  tx: Queryable,
+  loaded: Database,
+  draft: Database,
+): Promise<void> {
+  assertImmutableRecords(loaded, draft);
   const previousWorkspaces = byId(loaded.workspaces);
   for (const workspace of draft.workspaces) {
     await writeWorkspace(tx, previousWorkspaces.get(workspace.id), workspace);
@@ -194,6 +253,12 @@ async function persist(tx: Queryable, loaded: Database, draft: Database): Promis
   }
 
   const previousSessions = byId(loaded.sessions);
+  const currentSessions = byId(draft.sessions);
+  for (const session of loaded.sessions) {
+    if (!currentSessions.has(session.id)) {
+      await tx.query("DELETE FROM sessions WHERE id = $1", [session.id]);
+    }
+  }
   for (const session of draft.sessions) {
     if (previousSessions.has(session.id)) continue;
     await insertSession(tx, session);
@@ -207,6 +272,20 @@ async function persist(tx: Queryable, loaded: Database, draft: Database): Promis
   const previousOrders = byId(loaded.orders);
   for (const order of draft.orders) {
     await writeOrder(tx, previousOrders.get(order.id), order);
+  }
+
+  const previousHistory = byId(loaded.planHistory);
+  for (const entry of draft.planHistory) {
+    if (previousHistory.has(entry.id)) continue;
+    await tx.query(
+      "INSERT INTO plan_history (id, workspace_id, plan_id, body) VALUES ($1, $2, $3, $4::jsonb)",
+      [entry.id, entry.plan.workspaceId, entry.plan.id, JSON.stringify(entry)],
+    );
+  }
+  const previousDemoOrders = byId(loaded.demoOrders);
+  for (const entry of draft.demoOrders) {
+    if (previousDemoOrders.has(entry.id)) continue;
+    await tx.query("INSERT INTO demo_orders (id, body) VALUES ($1, $2::jsonb)", [entry.id, JSON.stringify(entry)]);
   }
 
   const previousActivity = byId(loaded.activity);
@@ -223,14 +302,15 @@ async function writeWorkspace(
 ): Promise<void> {
   if (!previous) {
     await tx.query(
-      `INSERT INTO workspaces (id, account_id, quote_asset, balance, example_hold)
-       VALUES ($1, $2, $3, $4, $5)`,
+      `INSERT INTO workspaces (id, account_id, quote_asset, balance, example_hold, captured_at)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
       [
         workspace.id,
         workspace.account.accountId,
         workspace.account.quoteAsset,
         workspace.account.balance,
         workspace.exampleHold,
+        workspace.account.capturedAt,
       ],
     );
     return;
@@ -238,13 +318,14 @@ async function writeWorkspace(
   if (same(previous, workspace)) return;
   await tx.query(
     `UPDATE workspaces
-     SET account_id = $1, quote_asset = $2, balance = $3, example_hold = $4
-     WHERE id = $5`,
+     SET account_id = $1, quote_asset = $2, balance = $3, example_hold = $4, captured_at = $5
+     WHERE id = $6`,
     [
       workspace.account.accountId,
       workspace.account.quoteAsset,
       workspace.account.balance,
       workspace.exampleHold,
+      workspace.account.capturedAt,
       workspace.id,
     ],
   );
@@ -302,8 +383,8 @@ async function writeOrder(tx: Queryable, previous: Order | undefined, order: Ord
   }
   if (same(previous, order)) return;
   const result = await tx.query(
-    "UPDATE orders SET status = $1, body = $2::jsonb WHERE id = $3 AND status = $4",
-    [order.status, body, order.id, previous.status],
+    "UPDATE orders SET status = $1, body = $2::jsonb WHERE id = $3 AND body = $4::jsonb",
+    [order.status, body, order.id, JSON.stringify(previous)],
   );
   if (touched(result) === 0) {
     throw new RecordConflict("Order changed. Review the latest status.");
@@ -331,14 +412,14 @@ export class SqlStore implements Records {
 
   static async memory(): Promise<SqlStore> {
     const pg = await PGlite.create();
-    await pg.exec(SCHEMA);
+    await pg.exec(LOCAL_SCHEMA);
     return new SqlStore(pg);
   }
 
   static async open(dataDir: string): Promise<SqlStore> {
     await mkdir(dataDir, { recursive: true });
     const pg = await PGlite.create(dataDir);
-    await pg.exec(SCHEMA);
+    await pg.exec(LOCAL_SCHEMA);
     return new SqlStore(pg);
   }
 
@@ -346,14 +427,14 @@ export class SqlStore implements Records {
     return this.pg.close();
   }
 
-  transaction<T>(fn: (db: Database) => T): Promise<T> {
+  transaction<T>(fn: (db: Database) => T, _scope?: RecordScope): Promise<T> {
     return this.pg.transaction(async (tx) => {
       const loaded = await loadDatabase(tx);
       const draft = structuredClone(loaded);
       const result = fn(draft);
       DatabaseSchema.parse(draft);
-      await persist(tx, loaded, draft);
-      return result;
+      await persistDatabase(tx, loaded, draft);
+      return structuredClone(result);
     });
   }
 }

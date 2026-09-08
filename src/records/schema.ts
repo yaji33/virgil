@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { PlanSchema } from "../plans/plan.js";
 import { OrderSchema } from "../execution/order.js";
+import { PlanHistorySchema } from "../plans/history.js";
+import { DemoOrderRecordSchema } from "../execution/demo-record.js";
 
 const IdentifierSchema = z.string().trim().min(1).max(128);
 const AssetSchema = z.string().regex(/^[A-Z0-9]{1,20}$/);
@@ -14,6 +16,7 @@ export const AccountRecordSchema = z
     workspaceId: IdentifierSchema,
     quoteAsset: AssetSchema,
     balance: BalanceSchema,
+    capturedAt: z.string().datetime().default("1970-01-01T00:00:00.000Z"),
   })
   .strict();
 
@@ -63,6 +66,8 @@ export const DatabaseSchema = z
     sessions: z.array(SessionRecordSchema),
     plans: z.array(PlanSchema),
     orders: z.array(OrderSchema).default([]),
+    planHistory: z.array(PlanHistorySchema).default([]),
+    demoOrders: z.array(DemoOrderRecordSchema).default([]),
     activity: z.array(ActivityRecordSchema),
   })
   .strict();
@@ -83,6 +88,8 @@ export function emptyDatabase(): Database {
     sessions: [],
     plans: [],
     orders: [],
+    planHistory: [],
+    demoOrders: [],
     activity: [],
   };
 }

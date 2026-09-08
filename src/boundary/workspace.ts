@@ -6,11 +6,16 @@ import {
   tokenMatches,
   type Actor,
 } from "../auth/session.js";
-import type { ExecutionAdapter, ExchangeSnapshot } from "../execution/adapter.js";
+import type { AccountSnapshot, ExecutionAdapter } from "../execution/adapter.js";
+import { recordPlanHistory, type PlanHistory } from "../plans/history.js";
+import { lookupSnapshot, recordExchange, unresolved } from "../execution/reconcile.js";
 import { DemoExchange } from "../execution/demo.js";
 import { assertCanSubmit } from "../execution/gate.js";
 import { OrderSchema, type Order } from "../execution/order.js";
-import { exceedsQuote, quoteUnits, subtractQuote } from "../money/decimal.js";
+import { exceedsQuote } from "../money/decimal.js";
+import { availableQuote, reservedTotal } from "../capital/available.js";
+import { requireCurrentSnapshot } from "../capital/snapshot.js";
+import { evaluateExecution } from "../policy/execution.js";
 import {
   approvePlan,
   createPlan,
@@ -24,7 +29,7 @@ import {
 } from "../plans/plan.js";
 import type { ActivityRecord, Database, WorkspaceRecord } from "../records/schema.js";
 import { RecordConflict } from "../records/conflict.js";
-import type { Records } from "../records/store.js";
+import type { Records, RecordScope } from "../records/store.js";
 import { conflict, forbidden, invalid, unauthorized } from "./errors.js";
 
 export const DEMO_ACCOUNT_ID = "demo-account";
@@ -35,10 +40,12 @@ export interface WorkspaceState {
   actor: Actor;
   workspace: WorkspaceRecord;
   available: string;
+  reserved: string;
   environment: "DEMO" | "LIVE";
   plans: Plan[];
   orders: Order[];
   activity: ActivityRecord[];
+  planHistory: PlanHistory[];
 }
 
 export interface IssuedSession {
@@ -46,8 +53,35 @@ export interface IssuedSession {
   actor: Actor;
 }
 
-function availableOf(workspace: WorkspaceRecord): string {
-  return subtractQuote(workspace.account.balance, workspace.exampleHold);
+function availableOf(
+  workspace: WorkspaceRecord,
+  orders: Order[],
+  environment: "DEMO" | "LIVE",
+): string {
+  return availableQuote(
+    environment === "LIVE" ? { ...workspace, exampleHold: "0" } : workspace,
+    orders,
+  );
+}
+
+function applySnapshot(
+  workspace: WorkspaceRecord,
+  snapshot: AccountSnapshot,
+  environment: "DEMO" | "LIVE",
+): void {
+  if (snapshot.accountId !== workspace.account.accountId ||
+    snapshot.quoteAsset !== workspace.account.quoteAsset) {
+    throw invalid("The account snapshot does not match this workspace.");
+  }
+  workspace.account.capturedAt = snapshot.capturedAt;
+  if (environment === "LIVE") workspace.account.balance = snapshot.balance;
+}
+
+function assertExecution(terms: Plan["terms"], available: string): void {
+  const decision = evaluateExecution(terms, available);
+  if (decision.decision === "BLOCK") {
+    throw invalid(decision.reasons[0] ?? "This plan is not allowed to execute.");
+  }
 }
 
 function requireActor(db: Database, token: string | undefined): Actor {
@@ -110,74 +144,18 @@ function record(
 
 function stateOf(db: Database, actor: Actor, environment: "DEMO" | "LIVE"): WorkspaceState {
   const workspace = requireWorkspace(db, actor);
+  const orders = db.orders.filter((order) => order.workspaceId === actor.workspaceId);
   return {
     actor,
     workspace,
-    available: availableOf(workspace),
+    available: availableOf(workspace, orders, environment),
+    reserved: reservedTotal(orders, actor.workspaceId),
     environment,
     plans: db.plans.filter((plan) => plan.workspaceId === actor.workspaceId),
-    orders: db.orders.filter((order) => order.workspaceId === actor.workspaceId),
+    orders,
+    planHistory: db.planHistory.filter((entry) => entry.plan.workspaceId === actor.workspaceId),
     activity: db.activity.filter((event) => event.workspaceId === actor.workspaceId),
   };
-}
-
-function applyExchange(
-  base: {
-    id: string;
-    workspaceId: string;
-    planId: string;
-    planRevision: number;
-    approvedPlan?: Plan;
-    environment: "DEMO";
-    exchangeOrderId: string;
-    submittedAt: string;
-  },
-  snapshot: ExchangeSnapshot,
-): Order {
-  if (base.approvedPlan && (snapshot.status === "FILLED" || snapshot.status === "PARTIAL")) {
-    const total = quoteUnits(base.approvedPlan.terms.quoteAmount);
-    const filled = quoteUnits(snapshot.filledQuoteAmount);
-    if (filled > total || (snapshot.status === "PARTIAL" &&
-      filled + quoteUnits(snapshot.remainingQuoteAmount) !== total)) {
-      throw invalid("Exchange quantities do not match the approved amount.");
-    }
-  }
-  const updatedAt = new Date().toISOString();
-  if (snapshot.status === "UNKNOWN") {
-    return OrderSchema.parse({
-      ...base,
-      exchangeOrderId: snapshot.exchangeOrderId,
-      status: "UNKNOWN",
-      updatedAt,
-    });
-  }
-  if (snapshot.status === "REJECTED") {
-    return OrderSchema.parse({
-      ...base,
-      exchangeOrderId: snapshot.exchangeOrderId,
-      status: "REJECTED",
-      reason: snapshot.reason,
-      updatedAt,
-    });
-  }
-  if (snapshot.status === "PARTIAL") {
-    return OrderSchema.parse({
-      ...base,
-      exchangeOrderId: snapshot.exchangeOrderId,
-      status: "PARTIAL",
-      filledQuoteAmount: snapshot.filledQuoteAmount,
-      remainingQuoteAmount: snapshot.remainingQuoteAmount,
-      updatedAt,
-    });
-  }
-  return OrderSchema.parse({
-    ...base,
-    exchangeOrderId: snapshot.exchangeOrderId,
-    status: "FILLED",
-    filledQuoteAmount: snapshot.filledQuoteAmount,
-    receiptId: snapshot.receiptId,
-    updatedAt,
-  });
 }
 
 function replaceOrder(db: Database, order: Order): void {
@@ -195,11 +173,14 @@ function lifecycleError(error: unknown): never {
 export class WorkspaceBoundary {
   constructor(
     private readonly store: Records,
-    private readonly exchange: ExecutionAdapter = new DemoExchange(),
+    private readonly exchange: ExecutionAdapter = new DemoExchange("filled", store),
   ) {}
 
-  private run<T>(fn: (db: Database) => T): Promise<T> {
-    return this.store.transaction(fn).catch((error: unknown) => {
+  private run<T>(
+    fn: (db: Database) => T,
+    scope?: RecordScope,
+  ): Promise<T> {
+    return this.store.transaction(fn, scope).catch((error: unknown) => {
       if (error instanceof RecordConflict) throw conflict(error.message);
       throw error;
     });
@@ -226,6 +207,7 @@ export class WorkspaceBoundary {
           workspaceId,
           quoteAsset: "USDT",
           balance: DEMO_BALANCE,
+          capturedAt: new Date().toISOString(),
         },
       });
       db.memberships.push({ userId, workspaceId });
@@ -238,13 +220,89 @@ export class WorkspaceBoundary {
         expiresAt: sessionExpiry(),
       });
       return { token: issued, actor: { userId, workspaceId } };
-    });
+    }, token ? { tokenHash: hashToken(token) } : undefined);
   }
 
-  read(token: string | undefined): Promise<WorkspaceState> {
-    return this.run((db) =>
-      stateOf(db, requireActor(db, token), this.exchange.environment),
+  async openAuthenticatedSession(
+    userId: string,
+    token?: string,
+    expiresAt = sessionExpiry(),
+  ): Promise<IssuedSession> {
+    if (token) {
+      try {
+        const current = await this.run((db) => {
+          const actor = requireActor(db, token);
+          if (actor.userId !== userId) throw unauthorized();
+          return { token, actor };
+        }, { tokenHash: hashToken(token) });
+        return current;
+      } catch {
+        // Replace an expired or mismatched application session.
+      }
+    }
+    return this.run((db) => {
+      let membership = db.memberships.find((item) => item.userId === userId);
+      if (!membership) {
+        const workspaceId = globalThis.crypto.randomUUID();
+        db.workspaces.push({
+          id: workspaceId,
+          exampleHold: "0",
+          account: {
+            accountId: DEMO_ACCOUNT_ID,
+            workspaceId,
+            quoteAsset: "USDT",
+            balance: DEMO_BALANCE,
+            capturedAt: new Date().toISOString(),
+          },
+        });
+        membership = { userId, workspaceId };
+        db.memberships.push(membership);
+      }
+      const issued = issueToken();
+      db.sessions.push({
+        id: globalThis.crypto.randomUUID(),
+        tokenHash: hashToken(issued),
+        userId,
+        workspaceId: membership.workspaceId,
+        createdAt: new Date().toISOString(),
+        expiresAt,
+      });
+      return {
+        token: issued,
+        actor: { userId, workspaceId: membership.workspaceId },
+      };
+    }, { userId });
+  }
+
+  closeSession(token: string | undefined): Promise<void> {
+    if (!token) return Promise.resolve();
+    return this.run((db) => {
+      const hash = hashToken(token);
+      db.sessions = db.sessions.filter((session) => session.tokenHash !== hash);
+    }, { tokenHash: hashToken(token) });
+  }
+
+  currentSession(token: string | undefined): Promise<Actor> {
+    return this.run(
+      (db) => requireActor(db, token),
+      token ? { tokenHash: hashToken(token) } : undefined,
     );
+  }
+
+  async read(token: string | undefined): Promise<WorkspaceState> {
+    if (this.exchange.environment !== "LIVE") {
+      return this.run((db) => stateOf(db, requireActor(db, token), this.exchange.environment), token ? { tokenHash: hashToken(token) } : undefined);
+    }
+    const accountId = await this.run((db) =>
+      requireWorkspace(db, requireActor(db, token)).account.accountId,
+    token ? { tokenHash: hashToken(token) } : undefined);
+    const snapshot = await requireCurrentSnapshot(this.exchange, accountId);
+    return this.run((db) => {
+      const actor = requireActor(db, token);
+      const workspace = requireWorkspace(db, actor);
+      applySnapshot(workspace, snapshot, this.exchange.environment);
+      return stateOf(db, actor, this.exchange.environment);
+    }, token ? { tokenHash: hashToken(token) } : undefined);
   }
 
   create(token: string | undefined, terms: PlanTerms): Promise<Plan> {
@@ -256,10 +314,11 @@ export class WorkspaceBoundary {
         source: { kind: "CONSUMER", userId: actor.userId },
         terms: bindTerms(workspace, terms),
       });
+      recordPlanHistory(db, plan, actor);
       replacePlan(db, plan);
       record(db, actor, plan, "Draft created.");
       return plan;
-    });
+    }, token ? { tokenHash: hashToken(token) } : undefined);
   }
 
   revise(
@@ -281,13 +340,14 @@ export class WorkspaceBoundary {
           expectedRevision,
           bindTerms(workspace, terms),
         );
+        recordPlanHistory(db, plan, actor);
         replacePlan(db, plan);
         record(db, actor, plan, "Terms revised. Previous approval cleared.");
         return plan;
       } catch (error) {
         lifecycleError(error);
       }
-    });
+    }, token ? { tokenHash: hashToken(token) } : undefined);
   }
 
   review(
@@ -304,11 +364,16 @@ export class WorkspaceBoundary {
     }, "Ready for your review.");
   }
 
-  approve(
+  async approve(
     token: string | undefined,
     planId: string,
     expectedRevision: number,
   ): Promise<Plan> {
+    const accountId = await this.run(
+      (db) => requireWorkspace(db, requireActor(db, token)).account.accountId,
+      token ? { tokenHash: hashToken(token) } : undefined,
+    );
+    const snapshot = await requireCurrentSnapshot(this.exchange, accountId);
     return this.run((db) => {
       const actor = requireActor(db, token);
       const workspace = requireWorkspace(db, actor);
@@ -316,20 +381,24 @@ export class WorkspaceBoundary {
       if (current.revision !== expectedRevision) {
         throw conflict("Plan changed. Review the latest revision.");
       }
-      if (exceedsQuote(current.terms.quoteAmount, availableOf(workspace))) {
+      applySnapshot(workspace, snapshot, this.exchange.environment);
+      const available = availableOf(workspace, db.orders, this.exchange.environment);
+      if (exceedsQuote(current.terms.quoteAmount, available)) {
         throw invalid(
-          "The amount exceeds the illustrative available balance. Adjust the plan before approving.",
+          "The amount exceeds the available USDT balance. Adjust the plan before approving.",
         );
       }
+      assertExecution(current.terms, available);
       try {
         const plan = approvePlan(current, expectedRevision, actor.userId);
+        recordPlanHistory(db, plan, actor);
         replacePlan(db, plan);
         record(db, actor, plan, "Terms approved. No order submitted.");
         return plan;
       } catch (error) {
         lifecycleError(error);
       }
-    });
+    }, token ? { tokenHash: hashToken(token) } : undefined);
   }
 
   async submit(
@@ -337,7 +406,11 @@ export class WorkspaceBoundary {
     planId: string,
     expectedRevision: number,
   ): Promise<Order> {
-    if (this.exchange.environment !== "DEMO") throw invalid("Live Binance execution is not enabled.");
+    const accountId = await this.run(
+      (db) => requireWorkspace(db, requireActor(db, token)).account.accountId,
+      token ? { tokenHash: hashToken(token) } : undefined,
+    );
+    const snapshot = await requireCurrentSnapshot(this.exchange, accountId);
     const prepared = await this.run((db) => {
       const actor = requireActor(db, token);
       const workspace = requireWorkspace(db, actor);
@@ -345,56 +418,33 @@ export class WorkspaceBoundary {
       if (plan.revision !== expectedRevision) {
         throw conflict("Plan changed. Review the latest revision.");
       }
-      assertCanSubmit(plan, availableOf(workspace), db.orders);
+      applySnapshot(workspace, snapshot, this.exchange.environment);
+      const available = availableOf(workspace, db.orders, this.exchange.environment);
+      assertCanSubmit(plan, available, db.orders);
+      assertExecution(plan.terms, available);
       const id = globalThis.crypto.randomUUID();
       const now = new Date().toISOString();
       const order = OrderSchema.parse({
         id, workspaceId: actor.workspaceId, planId: plan.id,
-        planRevision: plan.revision, approvedPlan: plan, environment: "DEMO",
+        planRevision: plan.revision, approvedPlan: plan, environment: this.exchange.environment,
         exchangeOrderId: `pending-${id}`, status: "UNKNOWN",
         submittedAt: now, updatedAt: now,
       });
       replaceOrder(db, order);
-      record(db, actor, plan, "Execution attempt recorded. Outcome is not yet known.");
+      record(db, actor, plan, "Execution attempt recorded. Quote is reserved until the order fills or is rejected.");
       return { actor, plan, workspace, order };
-    });
-    const snapshot = await this.exchange.submitSpotBuy({
+    }, token ? { tokenHash: hashToken(token) } : undefined);
+    const exchangeSnapshot = await this.exchange.submitSpotBuy({
       idempotencyKey: prepared.order.id,
       accountId: prepared.workspace.account.accountId,
       baseAsset: prepared.plan.terms.baseAsset,
       quoteAsset: prepared.plan.terms.quoteAsset,
       quoteAmount: prepared.plan.terms.quoteAmount,
     });
-    return this.run((db) => {
-      const { actor, plan } = prepared;
-      const current = db.orders.find((item) => item.id === prepared.order.id)!;
-      if (current.status !== "UNKNOWN") return current;
-      const order = applyExchange(
-        {
-          id: prepared.order.id,
-          workspaceId: actor.workspaceId,
-          planId: plan.id,
-          planRevision: plan.revision,
-          approvedPlan: plan,
-          environment: "DEMO",
-          exchangeOrderId: snapshot.exchangeOrderId,
-          submittedAt: prepared.order.submittedAt,
-        },
-        snapshot,
-      );
-      replaceOrder(db, order);
-      record(
-        db,
-        actor,
-        plan,
-        order.status === "UNKNOWN"
-          ? "Order submitted. Reconciliation is required before treating it as filled."
-          : order.status === "REJECTED"
-            ? "Order rejected by the demo exchange. No fill is recorded."
-            : "Order submitted to the demo exchange.",
-      );
-      return order;
-    });
+    return this.run(
+      (db) => recordExchange(db, prepared.order.id, exchangeSnapshot),
+      token ? { tokenHash: hashToken(token) } : undefined,
+    );
   }
 
   async reconcile(token: string | undefined, orderId: string): Promise<Order> {
@@ -405,63 +455,17 @@ export class WorkspaceBoundary {
         throw forbidden("This order is no longer available.");
       }
       return order;
-    });
-    if (current.status === "FILLED" || current.status === "REJECTED") {
-      return current;
-    }
-    const terms = current.approvedPlan?.terms;
-    const snapshot = await this.exchange.fetchOrder(current.exchangeOrderId, terms ? {
-      idempotencyKey: current.id, accountId: terms.accountId,
-      baseAsset: terms.baseAsset, quoteAsset: terms.quoteAsset, quoteAmount: terms.quoteAmount,
-    } : undefined);
-    if (snapshot.exchangeOrderId !== current.exchangeOrderId) {
-      throw invalid("Exchange order identity changed during reconciliation.");
-    }
+    }, token ? { tokenHash: hashToken(token) } : undefined);
+    if (!unresolved(current)) return current;
+    const snapshot = await lookupSnapshot(this.exchange, current);
     return this.run((db) => {
       const actor = requireActor(db, token);
       const order = db.orders.find((item) => item.id === orderId);
       if (!order || order.workspaceId !== actor.workspaceId) {
         throw forbidden("This order is no longer available.");
       }
-      if (order.status === "FILLED" || order.status === "REJECTED") return order;
-      if (order.status === "PARTIAL") {
-        if (snapshot.status === "UNKNOWN") return order;
-        if (snapshot.status === "REJECTED" ||
-          quoteUnits(snapshot.filledQuoteAmount) < quoteUnits(order.filledQuoteAmount)) {
-          throw invalid("Exchange reconciliation cannot discard a recorded fill.");
-        }
-      }
-      const next = applyExchange(
-        {
-          id: order.id,
-          workspaceId: order.workspaceId,
-          planId: order.planId,
-          planRevision: order.planRevision,
-          approvedPlan: order.approvedPlan,
-          environment: order.environment,
-          exchangeOrderId: order.exchangeOrderId,
-          submittedAt: order.submittedAt,
-        },
-        snapshot,
-      );
-      replaceOrder(db, next);
-      const plan = order.approvedPlan ?? {
-        ...requireOwnedPlan(db, actor, order.planId), revision: order.planRevision,
-      };
-      record(
-        db,
-        actor,
-        plan,
-        next.status === "FILLED"
-          ? "Demo receipt recorded. Funds were not moved."
-          : next.status === "REJECTED"
-            ? "Order rejected after reconciliation. No fill is recorded."
-            : next.status === "PARTIAL"
-              ? "Partial fill recorded. Reconciliation can continue."
-              : "Order status is still unknown. Awaiting reconciliation.",
-      );
-      return next;
-    });
+      return snapshot ? recordExchange(db, orderId, snapshot) : order;
+    }, token ? { tokenHash: hashToken(token) } : undefined);
   }
 
   setExampleHold(token: string | undefined, enabled: boolean): Promise<WorkspaceState> {
@@ -482,7 +486,7 @@ export class WorkspaceBoundary {
         });
       }
       return stateOf(db, actor, this.exchange.environment);
-    });
+    }, token ? { tokenHash: hashToken(token) } : undefined);
   }
 
   private mutate(
@@ -499,9 +503,10 @@ export class WorkspaceBoundary {
         throw conflict("Plan changed. Review the latest revision.");
       }
       const plan = apply(current);
+      recordPlanHistory(db, plan, actor);
       replacePlan(db, plan);
       record(db, actor, plan, message);
       return plan;
-    });
+    }, token ? { tokenHash: hashToken(token) } : undefined);
   }
 }

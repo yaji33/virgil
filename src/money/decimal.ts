@@ -16,6 +16,10 @@ export function formatQuote(units: bigint): string {
   return `${negative ? "-" : ""}${whole}${fraction ? `.${fraction}` : ""}`;
 }
 
+export function addQuote(left: string, right: string): string {
+  return formatQuote(quoteUnits(left) + quoteUnits(right));
+}
+
 export function subtractQuote(left: string, right: string): string {
   return formatQuote(quoteUnits(left) - quoteUnits(right));
 }

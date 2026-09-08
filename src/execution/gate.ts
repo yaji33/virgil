@@ -24,7 +24,7 @@ export function assertCanSubmit(
   }
   if (exceedsQuote(plan.terms.quoteAmount, available)) {
     throw invalid(
-      "The amount exceeds the illustrative available balance. Adjust the plan before submitting.",
+      "The amount exceeds the available USDT balance. Adjust the plan before submitting.",
     );
   }
   const existing = orderForRevision(orders, plan.id, plan.revision);
