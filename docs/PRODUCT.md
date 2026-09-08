@@ -34,9 +34,9 @@ Shared-capital milestone: a consumer plan and an external strategy compete for a
 
 ## Approval and execution
 
-The current lifecycle models DRAFT -> IN_REVIEW -> APPROVED. Editing returns a plan to DRAFT with a new revision. These are pure local transformations, not durable authorization records.
+The current lifecycle models DRAFT -> IN_REVIEW -> APPROVED. Editing returns a plan to DRAFT with a new revision. The application boundary authenticates the actor, scopes workspaces, and applies those transitions inside a transactional store that compares the stored revision before writing.
 
-Before live execution, add authenticated permissions, transactional storage, policy evaluation, current account reconciliation, reservations, action-specific approval, and the execution adapter. Retain the precise terms, actor, timestamps, and exchange references in durable records.
+Before live execution, add policy evaluation, current account reconciliation, reservations, action-specific approval, and the execution adapter. Retain the precise terms, actor, timestamps, and exchange references in durable records.
 
 ## Initial scope
 

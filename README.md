@@ -68,6 +68,11 @@ The domain code is organized into separate modules:
 | Module | Responsibility |
 | --- | --- |
 | `src/plans/` | Validated plan terms, source identity references, revisions, review, and approval transitions |
+| `src/auth/` | Demo sessions and hashed tokens; actor identity is derived from the session |
+| `src/records/` | Transactional persistence for workspaces, accounts, plans, and activity |
+| `src/boundary/` | Authenticated workspace operations, account isolation, and revision checks |
+| `src/money/` | Exact decimal-string arithmetic for quote amounts |
+| `src/http/` | Local HTTP adapter used by the browser workspace |
 | `src/policy/` | Deterministic decisions based on mandate rules and supplied risk results |
 | `src/risk/` | Position-size and available-capital evaluation using supplied exposure |
 | `src/types/` | Shared mandate, proposal, risk-result, and decision schemas |
@@ -83,7 +88,7 @@ The domain code is organized into separate modules:
 - **Submitted does not mean completed.** Order status and plan status are separate concepts.
 - **Governance has a boundary.** Virgil governs its own execution path; independently authorized exchange activity must be reconciled.
 
-The plan lifecycle functions are local domain operations. They are not an authenticated API, a transactional store, or an exchange execution service.
+The plan lifecycle functions remain pure domain operations. The application boundary authenticates callers and persists results. It is not an exchange execution service.
 
 ## Tech stack
 
@@ -113,7 +118,7 @@ pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-Open `http://127.0.0.1:5173` to create, review, approve, and revise a plan. The workspace includes a labelled capital-conflict simulation, session activity, and labelled snapshot and execution examples. It uses a guided form, requires no credentials, and places no trades. Plans clear when the page reloads.
+Open `http://127.0.0.1:5173` to create, review, approve, and revise a plan. The page opens a local demo session with no Binance credentials and places no trades. Plans, activity, and the illustrative USDT balance are saved on this computer and survive refresh. The workspace includes a labelled capital-conflict simulation and labelled snapshot and execution examples.
 
 For the command-line lifecycle example, run `pnpm demo:plans`.
 
@@ -151,12 +156,14 @@ Verified on September 8, 2026, using Node.js 22.20.0:
 | Plan tests | 19 passed |
 | Policy tests | 6 passed |
 | Workspace tests | 7 passed |
-| Unit total | 32 passed across 3 test files |
-| Browser tests | 6 passed in installed Chrome, including a mobile viewport |
+| Boundary tests | 7 passed |
+| HTTP tests | 1 passed |
+| Unit total | 40 passed across 5 test files |
+| Browser tests | 7 passed in installed Chrome, including a mobile viewport |
 
 The suite covers consumer and integration plan sources, revision-bound approval, approval invalidation, stale revisions, invalid transitions, input-copy behavior, decimal-string validation, asset and product restrictions, position limits, and risk-failure precedence.
 
-Browser tests cover revision and approval, capital-conflict resizing, labelled snapshot and execution examples, validation, escaped user input, keyboard dismissal, and mobile overflow. These tests do not establish live exchange integration, durable concurrency control, or trading performance.
+Browser tests cover revision and approval, capital-conflict resizing, labelled snapshot and execution examples, validation, escaped user input, keyboard dismissal, reload persistence, and mobile overflow. These tests do not establish live exchange integration or trading performance.
 
 Reproduce the checks with:
 
