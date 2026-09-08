@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { PlanSchema, type Plan } from "./plan.js";
 
 function requireRevision(plan: Plan, expectedRevision: number): void {
@@ -13,7 +12,7 @@ export function createPlan(input: {
   terms: Plan["terms"];
 }): Plan {
   return PlanSchema.parse({
-    id: randomUUID(),
+    id: globalThis.crypto.randomUUID(),
     workspaceId: input.workspaceId,
     source: input.source,
     terms: input.terms,
