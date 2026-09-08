@@ -5,8 +5,6 @@ import type { Decision, RiskResult } from "../types/decision.js";
 /**
  * Deterministic Policy Engine
  *
- * This is the heart of Vigil. All decisions are made by pure rules.
- * Risk agents provide structured inputs; this engine combines them with the Mandate.
  */
 export function evaluatePolicy(
   mandate: Mandate,
@@ -64,7 +62,7 @@ export function evaluatePolicy(
   // 5. Aggregate risk agent failures
   for (const [name, result] of Object.entries(riskResults)) {
     if (!result.passed) {
-      if (decision === "APPROVE") decision = "BLOCK";
+      decision = "BLOCK";
       reasons.push(`[${name}] ${result.message}`);
     }
   }

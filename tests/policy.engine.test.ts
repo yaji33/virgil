@@ -16,6 +16,20 @@ const baseMandate: Mandate = {
 };
 
 describe("Policy Engine", () => {
+  it("blocks failed risk checks even above the human approval threshold", () => {
+    const proposal: Proposal = {
+      action: "BUY",
+      symbol: "ETHUSDT",
+      product: "SPOT",
+      quoteQuantityUsd: 750,
+    };
+    const result = evaluatePositionSize(baseMandate, proposal, 9500);
+    expect(result.passed).toBe(false);
+    const decision = evaluatePolicy(baseMandate, proposal, { "position-size": result });
+    expect(decision.decision).toBe("BLOCK");
+    expect(decision.reasons).toContain(`[position-size] ${result.message}`);
+  });
+
   it("approves a valid small spot buy", () => {
     const proposal: Proposal = {
       action: "BUY",

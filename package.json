@@ -8,6 +8,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "demo": "tsx scripts/demo.ts",
+    "demo:plans": "tsx scripts/demo-plans.ts",
     "lint": "tsc --noEmit"
   },
   "engines": {
