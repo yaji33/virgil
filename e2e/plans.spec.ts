@@ -110,7 +110,7 @@ test("snapshot examples block approval and stay labelled", async ({ page }) => {
   ).toBeVisible();
 });
 
-test("execution examples and attention stay separate from approval", async ({
+test("submit and reconcile stay separate from approval", async ({
   page,
 }) => {
   await page.goto("/");
@@ -126,12 +126,18 @@ test("execution examples and attention stay separate from approval", async ({
   await page
     .getByRole("button", { name: "Approve purchase of 250 USDT of BTC" })
     .click();
-  await page
-    .getByLabel("Explore a labelled execution example")
-    .selectOption("receipt");
-  await expect(page.getByText("LABELLED EXECUTION EXAMPLE").first()).toBeVisible();
   await expect(
-    page.getByRole("heading", { name: "Example verified receipt" }),
+    page.getByText("No order submitted", { exact: true }),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Submit purchase of 250 USDT of BTC" })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "Awaiting reconciliation." }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Reconcile order" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Verified demo receipt." }),
   ).toBeVisible();
   await page.screenshot({
     path: "test-results/receipt-example.png",
@@ -139,7 +145,7 @@ test("execution examples and attention stay separate from approval", async ({
   });
   await expect(
     page.getByText("No order submitted", { exact: true }),
-  ).toBeVisible();
+  ).toHaveCount(0);
   await page.getByRole("switch", { name: "Simulate capital conflict" }).click();
   await expect(
     page.getByLabel("Example integration plan"),

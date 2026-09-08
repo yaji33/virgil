@@ -1,9 +1,19 @@
 import { exceedsQuote, formatQuote, subtractQuote } from "../src/money/decimal.js";
+import type { Order } from "../src/execution/order.js";
+import { orderForRevision as executionOrderForRevision } from "../src/execution/gate.js";
 import { PlanTermsSchema, type Plan, type PlanTerms } from "../src/plans/plan.js";
 import type { Activity, Actor, PlanRecords, WorkspaceSnapshot } from "./api.js";
 
-export type { Activity, Actor };
+export type { Activity, Actor, Order };
 export { formatQuote, subtractQuote };
+
+export function orderForRevision(
+  orders: Order[],
+  planId: string,
+  planRevision: number,
+): Order | undefined {
+  return executionOrderForRevision(orders, planId, planRevision);
+}
 
 export type SnapshotState =
   | "current"
@@ -11,13 +21,6 @@ export type SnapshotState =
   | "stale"
   | "disconnected"
   | "expired";
-
-export type OutcomeExample =
-  | "none"
-  | "rejected"
-  | "partial"
-  | "unknown"
-  | "receipt";
 
 export interface AttentionItem {
   id: string;
@@ -66,49 +69,15 @@ const SNAPSHOT_COPY: Record<
   },
 };
 
-const OUTCOME_COPY: Record<
-  OutcomeExample,
-  { label: string; title: string; message: string }
-> = {
-  none: {
-    label: "Do not show an example",
-    title: "No order submitted",
-    message: "Approval accepts terms only. This prototype does not place trades.",
-  },
-  rejected: {
-    label: "Rejected order",
-    title: "Example rejection",
-    message:
-      "The exchange would not accept this order. No fill is recorded. This is a labelled illustration, not an exchange confirmation.",
-  },
-  partial: {
-    label: "Partial fill",
-    title: "Example partial fill",
-    message:
-      "100 USDT of the planned purchase is shown as filled. The remainder would stay open. This is a labelled illustration, not an exchange confirmation.",
-  },
-  unknown: {
-    label: "Unknown order status",
-    title: "Example unknown status",
-    message:
-      "Reconciliation is underway before any retry. Submitted does not mean filled. This is a labelled illustration, not an exchange confirmation.",
-  },
-  receipt: {
-    label: "Verified receipt",
-    title: "Example verified receipt",
-    message:
-      "A completed fill would appear here with exchange references. Fees stay unavailable in this illustration. This is not an exchange confirmation.",
-  },
-};
-
 export class PlanWorkspace {
   plans: Plan[] = [];
+  orders: Order[] = [];
   activity: Activity[] = [];
   selectedId: string | undefined;
   actor: Actor | undefined;
   available = "500";
+  environment: "DEMO" | "LIVE" = "DEMO";
   snapshot: SnapshotState = "current";
-  outcomeExample: OutcomeExample = "none";
 
   constructor(private readonly records: PlanRecords) {}
 
@@ -134,10 +103,6 @@ export class PlanWorkspace {
     return SNAPSHOT_COPY[this.snapshot];
   }
 
-  get outcomeCopy(): (typeof OUTCOME_COPY)[OutcomeExample] {
-    return OUTCOME_COPY[this.outcomeExample];
-  }
-
   get snapshotOptions(): { value: SnapshotState; label: string }[] {
     return (Object.keys(SNAPSHOT_COPY) as SnapshotState[]).map((value) => ({
       value,
@@ -145,11 +110,8 @@ export class PlanWorkspace {
     }));
   }
 
-  get outcomeOptions(): { value: OutcomeExample; label: string }[] {
-    return (Object.keys(OUTCOME_COPY) as OutcomeExample[]).map((value) => ({
-      value,
-      label: OUTCOME_COPY[value].label,
-    }));
+  currentOrder(plan: Plan): Order | undefined {
+    return orderForRevision(this.orders, plan.id, plan.revision);
   }
 
   exceedsBalance(plan: Plan): boolean {
@@ -165,6 +127,12 @@ export class PlanWorkspace {
     return this.snapshotReady && !this.exceedsBalance(plan);
   }
 
+  canSubmit(plan: Plan): boolean {
+    if (plan.status !== "APPROVED" || !this.canApprove(plan)) return false;
+    const order = this.currentOrder(plan);
+    return !order || order.status === "REJECTED";
+  }
+
   attention(): AttentionItem[] {
     const items: AttentionItem[] = [];
     if (this.snapshot !== "current") {
@@ -176,6 +144,28 @@ export class PlanWorkspace {
       });
     }
     for (const plan of this.plans) {
+      const order = this.currentOrder(plan);
+      if (order?.status === "UNKNOWN") {
+        items.push({
+          id: `order-${order.id}`,
+          title: plan.terms.title,
+          message:
+            "Order status is unknown. Reconcile before retrying or treating it as filled.",
+          tone: "attention",
+          planId: plan.id,
+        });
+        continue;
+      }
+      if (order?.status === "PARTIAL") {
+        items.push({
+          id: `order-${order.id}`,
+          title: plan.terms.title,
+          message: "A partial fill is recorded. Reconciliation can continue.",
+          tone: "attention",
+          planId: plan.id,
+        });
+        continue;
+      }
       if (this.exceedsBalance(plan)) {
         items.push({
           id: `conflict-${plan.id}`,
@@ -211,7 +201,6 @@ export class PlanWorkspace {
 
   async save(terms: PlanTerms, editingId?: string, expectedRevision?: number): Promise<void> {
     const validated = PlanTermsSchema.parse(terms);
-    this.outcomeExample = "none";
     if (editingId) {
       const existing = this.plans.find((plan) => plan.id === editingId);
       if (!existing) throw new Error("This plan is no longer available.");
@@ -244,8 +233,28 @@ export class PlanWorkspace {
       throw new Error(
         "The amount exceeds the illustrative available balance. Adjust the plan before approving.",
       );
-    this.outcomeExample = "none";
     await this.records.approve(plan.id, plan.revision);
+    await this.refresh();
+  }
+
+  async submit(): Promise<void> {
+    const plan = this.requireSelected();
+    if (!this.snapshotReady)
+      throw new Error(
+        "The illustrative snapshot is not current enough to submit this plan.",
+      );
+    try {
+      await this.records.submit(plan.id, plan.revision);
+    } finally {
+      await this.refresh();
+    }
+  }
+
+  async reconcile(): Promise<void> {
+    const plan = this.requireSelected();
+    const order = this.currentOrder(plan);
+    if (!order) throw new Error("This plan has no order to reconcile.");
+    await this.records.reconcile(order.id);
     await this.refresh();
   }
 
@@ -270,10 +279,6 @@ export class PlanWorkspace {
     this.snapshot = snapshot;
   }
 
-  setOutcome(outcome: OutcomeExample): void {
-    this.outcomeExample = outcome;
-  }
-
   private async boot(): Promise<void> {
     this.apply(await this.records.boot());
   }
@@ -285,7 +290,9 @@ export class PlanWorkspace {
   private apply(state: WorkspaceSnapshot): void {
     this.actor = state.actor;
     this.available = state.available;
+    this.environment = state.environment;
     this.plans = state.plans;
+    this.orders = state.orders;
     this.activity = state.activity;
     if (!this.selectedId || !this.plans.some((plan) => plan.id === this.selectedId)) {
       this.selectedId = this.plans[0]?.id;

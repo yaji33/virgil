@@ -2,10 +2,10 @@ import {
   EXAMPLE_STRATEGY,
   type Activity,
   type AttentionItem,
-  type OutcomeExample,
   type PlanWorkspace,
   type SnapshotState,
 } from "./model.js";
+import type { Order } from "../src/execution/order.js";
 import type { Plan } from "../src/plans/plan.js";
 
 export const labels = {
@@ -96,15 +96,33 @@ function impact(workspace: PlanWorkspace, plan: Plan): string {
   return `If this purchase were filled, ${remaining} USDT would remain in the example.`;
 }
 
-function outcomeCard(workspace: PlanWorkspace): string {
-  if (workspace.outcomeExample === "none") return "";
-  const tone =
-    workspace.outcomeExample === "receipt"
-      ? "success"
-      : workspace.outcomeExample === "rejected"
-        ? "danger"
-        : "warning";
-  return `<section class="notice ${tone}"><span class="eyebrow">LABELLED EXECUTION EXAMPLE</span><h3>${escape(workspace.outcomeCopy.title)}</h3><p>${escape(workspace.outcomeCopy.message)}</p></section>`;
+function orderStatus(order: Order | undefined): string {
+  if (!order) return "No order submitted";
+  if (order.status === "UNKNOWN") return "Unknown - awaiting reconciliation";
+  if (order.status === "REJECTED") return "Rejected";
+  if (order.status === "PARTIAL") return "Partial fill";
+  return "Verified demo receipt";
+}
+
+function fees(order: Order | undefined): string {
+  if (order?.status === "FILLED" || order?.status === "PARTIAL") {
+    return "Unavailable in this demo fill";
+  }
+  return "Unavailable without an exchange quote";
+}
+
+function orderNotice(order: Order | undefined): string {
+  if (!order) return "";
+  if (order.status === "UNKNOWN") {
+    return `<section class="notice warning"><span class="eyebrow">DEMO ORDER - REVISION ${order.planRevision}</span><h3>Awaiting reconciliation.</h3><p>An execution attempt is recorded. Acceptance and fills are not yet confirmed. Reconcile before retrying.</p><p class="fine">Reference ${escape(order.exchangeOrderId)}</p></section>`;
+  }
+  if (order.status === "REJECTED") {
+    return `<section class="notice danger"><span class="eyebrow">DEMO ORDER</span><h3>Order rejected.</h3><p>${escape(order.reason)} No fill is recorded. This is not a Binance confirmation.</p></section>`;
+  }
+  if (order.status === "PARTIAL") {
+    return `<section class="notice warning"><span class="eyebrow">DEMO ORDER</span><h3>Partial fill recorded.</h3><p>${escape(order.filledQuoteAmount)} USDT is filled. ${escape(order.remainingQuoteAmount)} USDT remains. Funds were not moved.</p></section>`;
+  }
+  return `<section class="notice success"><span class="eyebrow">DEMO RECEIPT</span><h3>Verified demo receipt.</h3><p>${escape(order.filledQuoteAmount)} USDT filled for revision ${order.planRevision}. Funds were not moved. This is not a Binance confirmation.</p><p class="fine">Receipt ${escape(order.receiptId)}</p></section>`;
 }
 
 function exampleStrategy(): string {
@@ -114,8 +132,16 @@ function exampleStrategy(): string {
 export function planDetail(workspace: PlanWorkspace, plan: Plan): string {
   const insufficient = workspace.exceedsBalance(plan);
   const blockedSnapshot = !workspace.snapshotReady;
+  const order = workspace.currentOrder(plan);
   const step =
     plan.status === "DRAFT" ? 0 : plan.status === "IN_REVIEW" ? 1 : 2;
+  const approvedActions = order?.status === "UNKNOWN" || order?.status === "PARTIAL"
+    ? `<button class="primary" data-action="reconcile">Reconcile order</button>`
+    : workspace.canSubmit(plan)
+      ? `<button class="primary" data-action="submit">Submit purchase of ${escape(plan.terms.quoteAmount)} USDT of ${escape(plan.terms.baseAsset)}</button>`
+      : order?.status === "FILLED"
+        ? `<span class="approved-label">✓ Demo receipt · v${plan.revision}</span>`
+        : `<span class="approved-label">✓ Approved terms · v${plan.revision}</span>`;
   return `<article class="detail" aria-label="Selected plan">
     <div class="detail-top"><span class="eyebrow">ONE-TIME PURCHASE <span class="revision">v${plan.revision}</span></span>${status(plan)}</div>
     <h2>${escape(plan.terms.title)}</h2><p class="intent">${escape(plan.terms.intent)}</p>
@@ -127,8 +153,8 @@ export function planDetail(workspace: PlanWorkspace, plan: Plan): string {
       <div><dt>Created by</dt><dd>You</dd></div>
       <div><dt>Proposed spend</dt><dd>${escape(plan.terms.quoteAmount)} USDT</dd></div>
       <div><dt>Account impact</dt><dd>${escape(impact(workspace, plan))}</dd></div>
-      <div><dt>Fees and fill price</dt><dd>Unavailable without an exchange quote</dd></div>
-      <div><dt>Order status</dt><dd>No order submitted</dd></div>
+      <div><dt>Fees and fill price</dt><dd>${escape(fees(order))}</dd></div>
+      <div><dt>Order status</dt><dd>${escape(orderStatus(order))}</dd></div>
     </dl>
     ${
       blockedSnapshot
@@ -136,13 +162,12 @@ export function planDetail(workspace: PlanWorkspace, plan: Plan): string {
         : insufficient
           ? `<section class="notice warning"><span class="eyebrow">${workspace.conflict ? "SIMULATED CAPITAL CONFLICT" : "ILLUSTRATIVE BALANCE CHECK"}</span><h3>This plan needs an adjustment.</h3><p>${workspace.conflict ? "An example ETH strategy reserves 350 of the 500 USDT demo balance." : "The demo balance is 500 USDT."} Your ${escape(plan.terms.quoteAmount)} USDT purchase exceeds the ${workspace.available} USDT available.</p><div class="button-row">${button("resize", `Use ${workspace.available} USDT`, "primary")}${button("edit", "Choose another amount")}</div><p class="fine">Resizing creates a draft and clears any previous approval. This illustration does not reserve real capital.</p></section>`
           : plan.status === "APPROVED"
-            ? `<section class="notice success"><h3>Terms approved. You’re in control.</h3><p>Revision ${plan.revision} has your approval in this session. No funds have moved. Editing the plan requires a fresh review.</p></section>`
-            : `<section class="notice"><h3>${plan.status === "DRAFT" ? "Your intention, ready to review." : "Review the terms before approving."}</h3><p>Approval accepts this version of the plan. This prototype does not connect to Binance, reserve funds, or execute a trade.</p></section>`
+            ? `<section class="notice success"><h3>Terms approved. You’re in control.</h3><p>Revision ${plan.revision} has your approval. Submitting is a separate action. Editing the plan requires a fresh review.</p></section>`
+            : `<section class="notice"><h3>${plan.status === "DRAFT" ? "Your intention, ready to review." : "Review the terms before approving."}</h3><p>Approval accepts this version of the plan. It does not submit an order.</p></section>`
     }
-    ${outcomeCard(workspace)}
-    <label class="outcome-control"><span class="eyebrow">LABELLED EXECUTION EXAMPLE</span><select data-outcome aria-label="Explore a labelled execution example">${options(workspace.outcomeOptions, workspace.outcomeExample)}</select><span class="fine">Examples stay separate from approval. They do not submit an order.</span></label>
-    <div class="detail-actions">${button("edit", "Edit plan")}${plan.status === "DRAFT" ? button("review", 'Review this plan <span aria-hidden="true">→</span>', "primary") : plan.status === "IN_REVIEW" ? `<button class="${workspace.canApprove(plan) ? "primary" : "secondary"}" data-action="approve" ${workspace.canApprove(plan) ? "" : "disabled"}>Approve purchase of ${escape(plan.terms.quoteAmount)} USDT of ${escape(plan.terms.baseAsset)}</button>` : `<span class="approved-label">✓ Approved terms · v${plan.revision}</span>`}</div>
-    <details class="technical"><summary>Inspect structured plan</summary><pre>${escape(JSON.stringify(plan, null, 2))}</pre></details>
+    ${orderNotice(order)}
+    <div class="detail-actions">${button("edit", "Edit plan")}${plan.status === "DRAFT" ? button("review", 'Review this plan <span aria-hidden="true">→</span>', "primary") : plan.status === "IN_REVIEW" ? `<button class="${workspace.canApprove(plan) ? "primary" : "secondary"}" data-action="approve" ${workspace.canApprove(plan) ? "" : "disabled"}>Approve purchase of ${escape(plan.terms.quoteAmount)} USDT of ${escape(plan.terms.baseAsset)}</button>` : approvedActions}</div>
+    <details class="technical"><summary>Inspect structured plan</summary><pre>${escape(JSON.stringify({ plan, order }, null, 2))}</pre></details>
   </article>`;
 }
 
@@ -176,14 +201,14 @@ export function workspaceView(
             `<button data-page="${id}" class="nav-item ${page === id ? "active" : ""}" ${page === id ? 'aria-current="page"' : ""}><span aria-hidden="true">${icon}</span>${label}${id === "plans" ? `<span class="nav-count">${workspace.plans.length}</span>` : ""}</button>`,
         )
         .join("")}</nav>
-      <div class="sidebar-note"><span class="small-tag">PROTOTYPE</span><p>A signed-in local workspace.<br>No exchange connected.</p><span class="fine">Plans are saved on this computer. Refreshing keeps them.</span></div><div class="profile"><span class="avatar">Y</span><div>You<span>Signed in · Personal workspace</span></div><span class="profile-dot"></span></div></aside>
-    <div class="main-shell"><header class="topbar"><span>Workspace <span class="slash">/</span> ${page[0].toUpperCase() + page.slice(1)}</span><div class="environment"><span class="live-dot ${workspace.snapshot}"></span>Local simulation <span class="top-divider">|</span><span class="muted">No live funds</span><label class="snapshot-control">Snapshot <select data-snapshot aria-label="Explore a labelled account snapshot">${options(workspace.snapshotOptions, workspace.snapshot)}</select></label></div></header>
+      <div class="sidebar-note"><span class="small-tag">PROTOTYPE</span><p>A signed-in local workspace.<br>Demo execution only.</p><span class="fine">Plans are saved on this computer. Refreshing keeps them.</span></div><div class="profile"><span class="avatar">Y</span><div>You<span>Signed in · Personal workspace</span></div><span class="profile-dot"></span></div></aside>
+    <div class="main-shell"><header class="topbar"><span>Workspace <span class="slash">/</span> ${page[0].toUpperCase() + page.slice(1)}</span><div class="environment"><span class="live-dot ${workspace.snapshot}"></span>Demo execution <span class="top-divider">|</span><span class="muted">No live funds</span><label class="snapshot-control">Snapshot <select data-snapshot aria-label="Explore a labelled account snapshot">${options(workspace.snapshotOptions, workspace.snapshot)}</select></label></div></header>
     ${workspace.snapshot !== "current" ? `<div class="snapshot-banner ${workspace.snapshot}" role="status">${escape(workspace.snapshotCopy.banner)}</div>` : ""}
     <main id="main"><div class="page-heading"><div><span class="eyebrow">${heading[0]}</span><h1>${heading[1]}</h1><p>${heading[2]}</p></div>${page !== "activity" ? button("new", "+ Create plan", "primary") : ""}</div>
     ${page === "overview" ? `${workspace.attention().length ? attention(workspace.attention()) : ""}${balances(workspace)}` : ""}
     ${page !== "activity" ? `<section class="scenario"><div><span class="scenario-icon" aria-hidden="true">◇</span><div><strong>Explore a capital conflict</strong><p>See what changes when another strategy needs the same funds.</p></div></div><button class="switch ${workspace.conflict ? "on" : ""}" data-action="scenario" role="switch" aria-checked="${workspace.conflict}" aria-label="Simulate capital conflict"><span></span></button></section>${plans(workspace)}` : `<section class="panel activity-panel"><div class="section-heading"><h2>Workspace activity</h2><span class="small-tag">SAVED RECORD</span></div>${activity(workspace.activity)}</section>`}
     ${page === "overview" && workspace.activity.length ? `<section class="panel recent-panel"><div class="section-heading"><h2>Recent in this workspace</h2><span class="small-tag">SAVED RECORD</span></div>${activity(workspace.activity.slice(0, 3))}</section>` : ""}
-    <footer class="page-footer"><span><span class="footer-mark">V</span> Your intention. Your approval.</span><span>Simulation only · No trades are placed</span></footer></main></div></div>
+    <footer class="page-footer"><span><span class="footer-mark">V</span> Your intention. Your approval.</span><span>Demo execution · No live trades</span></footer></main></div></div>
     <div id="announcement" class="sr-only" role="status" aria-live="polite"></div>
     <dialog id="plan-dialog" aria-labelledby="dialog-title"><form id="plan-form" novalidate><div class="dialog-heading"><span class="eyebrow">ONE-TIME SPOT PURCHASE</span><button type="button" data-action="close" class="close" aria-label="Close plan editor">×</button></div><h2 id="dialog-title">Create a plan</h2><p id="editor-note" class="muted">Start with the essentials. You’ll review before approving.</p><label for="title">Plan name</label><input id="title" name="title" maxlength="120" placeholder="My BTC purchase" required><div class="form-row"><div><label for="asset">Asset to buy</label><select id="asset" name="asset"><option>BTC</option><option>ETH</option><option>BNB</option></select></div><div><label for="amount">Amount in USDT</label><input id="amount" name="amount" inputmode="decimal" placeholder="150" required aria-describedby="amount-help"></div></div><p id="amount-help" class="fine">Use a positive decimal amount. Fees are not estimated.</p><div class="form-fixed"><span>Account <strong>Demo account</strong></span><span>Schedule <strong>Once</strong></span></div><p id="form-error" role="alert"></p><div class="dialog-actions"><button type="button" class="secondary" data-action="close">Cancel</button><button class="primary" type="submit" id="save-plan">Create draft</button></div></form></dialog>`;
 }
@@ -192,8 +217,4 @@ export function isSnapshotState(value: string): value is SnapshotState {
   return ["current", "loading", "stale", "disconnected", "expired"].includes(
     value,
   );
-}
-
-export function isOutcomeExample(value: string): value is OutcomeExample {
-  return ["none", "rejected", "partial", "unknown", "receipt"].includes(value);
 }

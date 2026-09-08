@@ -6,7 +6,12 @@ import {
   type Database,
 } from "./schema.js";
 
-export class RecordStore {
+export interface Records {
+  transaction<T>(fn: (db: Database) => T): Promise<T>;
+  close(): Promise<void>;
+}
+
+export class RecordStore implements Records {
   private data: Database;
   private chain = Promise.resolve();
 
@@ -35,6 +40,10 @@ export class RecordStore {
 
   snapshot(): Database {
     return structuredClone(this.data);
+  }
+
+  close(): Promise<void> {
+    return Promise.resolve();
   }
 
   transaction<T>(fn: (db: Database) => T): Promise<T> {

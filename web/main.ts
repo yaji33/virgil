@@ -1,7 +1,7 @@
 import "./style.css";
 import { httpRecords } from "./api.js";
 import { PlanWorkspace } from "./model.js";
-import { isOutcomeExample, isSnapshotState, workspaceView } from "./view.js";
+import { isSnapshotState, workspaceView } from "./view.js";
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
 let page: "overview" | "plans" | "activity" = "overview";
@@ -96,16 +96,6 @@ app.addEventListener("change", (event) => {
     announce(workspace.snapshotCopy.banner || "Using the current illustration.");
     return;
   }
-  if ("outcome" in target.dataset && isOutcomeExample(target.value)) {
-    workspace.setOutcome(target.value);
-    render();
-    app.querySelector<HTMLSelectElement>("[data-outcome]")?.focus();
-    announce(
-      workspace.outcomeExample === "none"
-        ? "No order submitted."
-        : workspace.outcomeCopy.message,
-    );
-  }
 });
 
 app.addEventListener("click", (event) => {
@@ -174,8 +164,18 @@ app.addEventListener("click", (event) => {
           return;
         case "approve":
           await workspace.approve();
-          render("edit");
+          render("submit");
           announce("Terms approved. No order submitted.");
+          return;
+        case "submit":
+          await workspace.submit();
+          render("reconcile");
+          announce("Order submitted. Reconcile before treating it as filled.");
+          return;
+        case "reconcile":
+          await workspace.reconcile();
+          render("edit");
+          announce("Order status updated.");
           return;
         case "resize":
           await workspace.resize();
@@ -184,6 +184,7 @@ app.addEventListener("click", (event) => {
           return;
       }
     } catch (error) {
+      render();
       announce(
         error instanceof Error ? error.message : "Unable to update the plan.",
       );

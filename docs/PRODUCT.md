@@ -25,7 +25,7 @@ Shared-capital milestone: a consumer plan and an external strategy compete for a
 - Order status is separate from plan status. Submitted does not mean filled.
 - Workspace and integration identifiers are references, not authentication credentials.
 - The server derives actor identity from authentication and checks ownership before domain operations.
-- A database transaction must compare the stored revision and atomically update state. Pure lifecycle functions alone do not prevent concurrent writes or forged records.
+- A database transaction must compare the stored revision and atomically update state. Pure lifecycle functions alone do not prevent concurrent writes or forged records. Local persistence uses Postgres-compatible SQL (PGlite). In-memory JSON remains available for tests.
 - Exchange metadata determines valid assets, quantities, and order filters.
 - Quote amounts use decimal strings. The initial schema supports up to 20 integer and 18 fractional digits; this is a format boundary, not an exchange limit or risk budget.
 - Exact decimal arithmetic, valuation, fees, precision normalization, and exchange constraints are separate execution requirements. USDT amounts are not implicitly USD amounts.
@@ -34,9 +34,11 @@ Shared-capital milestone: a consumer plan and an external strategy compete for a
 
 ## Approval and execution
 
-The current lifecycle models DRAFT -> IN_REVIEW -> APPROVED. Editing returns a plan to DRAFT with a new revision. The application boundary authenticates the actor, scopes workspaces, and applies those transitions inside a transactional store that compares the stored revision before writing.
+The current lifecycle models DRAFT -> IN_REVIEW -> APPROVED. Editing returns a plan to DRAFT with a new revision. Submit is a separate action on an approved revision. Order status is stored independently of plan status.
 
-Before live execution, add policy evaluation, current account reconciliation, reservations, action-specific approval, and the execution adapter. Retain the precise terms, actor, timestamps, and exchange references in durable records.
+The application boundary authenticates the actor, scopes workspaces, revalidates the revision and available balance, then calls an execution adapter. The default adapter is demo-only. Live Binance execution is not enabled without credentials.
+
+Before live execution, add policy evaluation against decimal amounts, current account reconciliation, reservations, and a verified exchange adapter. Retain the precise terms, actor, timestamps, and exchange references in durable records.
 
 ## Initial scope
 

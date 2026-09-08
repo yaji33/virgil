@@ -1,3 +1,4 @@
+import type { Order } from "../src/execution/order.js";
 import type { Plan, PlanTerms } from "../src/plans/plan.js";
 
 export interface Actor {
@@ -22,7 +23,9 @@ export interface WorkspaceSnapshot {
     exampleHold: string;
   };
   available: string;
+  environment: "DEMO" | "LIVE";
   plans: Plan[];
+  orders: Order[];
   activity: Activity[];
 }
 
@@ -33,6 +36,8 @@ export interface PlanRecords {
   revise(planId: string, expectedRevision: number, terms: PlanTerms): Promise<Plan>;
   review(planId: string, expectedRevision: number): Promise<Plan>;
   approve(planId: string, expectedRevision: number): Promise<Plan>;
+  submit(planId: string, expectedRevision: number): Promise<Order>;
+  reconcile(orderId: string): Promise<Order>;
   setExampleHold(enabled: boolean): Promise<WorkspaceSnapshot>;
 }
 
@@ -100,6 +105,20 @@ export function httpRecords(): PlanRecords {
         body: JSON.stringify({ expectedRevision }),
       });
       return body.plan;
+    },
+    async submit(planId, expectedRevision) {
+      const body = await request<{ order: Order }>(`/api/plans/${planId}/submit`, {
+        method: "POST",
+        body: JSON.stringify({ expectedRevision }),
+      });
+      return body.order;
+    },
+    async reconcile(orderId) {
+      const body = await request<{ order: Order }>(
+        `/api/orders/${orderId}/reconcile`,
+        { method: "POST" },
+      );
+      return body.order;
     },
     setExampleHold(enabled) {
       return request("/api/workspace/example-hold", {

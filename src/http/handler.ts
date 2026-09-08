@@ -79,7 +79,7 @@ export async function handleApi(
       return true;
     }
     const planRoute = url.pathname.match(
-      /^\/api\/plans\/([0-9a-f-]{36})\/(revise|review|approve)$/,
+      /^\/api\/plans\/([0-9a-f-]{36})\/(revise|review|approve|submit)$/,
     );
     if (planRoute && req.method === "POST") {
       const [, planId, action] = planRoute;
@@ -105,8 +105,23 @@ export async function handleApi(
         });
         return true;
       }
+      if (action === "submit") {
+        send(res, 200, {
+          order: await boundary.submit(token, planId, expectedRevision),
+        });
+        return true;
+      }
       send(res, 200, {
         plan: await boundary.approve(token, planId, expectedRevision),
+      });
+      return true;
+    }
+    const orderRoute = url.pathname.match(
+      /^\/api\/orders\/([0-9a-f-]{36})\/reconcile$/,
+    );
+    if (orderRoute && req.method === "POST") {
+      send(res, 200, {
+        order: await boundary.reconcile(token, orderRoute[1]),
       });
       return true;
     }

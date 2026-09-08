@@ -71,7 +71,7 @@ describe("Prototype workspace", () => {
     expect(workspace.selected?.status).toBe("APPROVED");
   });
 
-  it("exposes the labelled snapshot and execution examples", async () => {
+  it("exposes the labelled snapshot examples", async () => {
     const workspace = await openWorkspace();
     expect(workspace.snapshotOptions.map((item) => item.value)).toEqual([
       "current",
@@ -80,29 +80,32 @@ describe("Prototype workspace", () => {
       "disconnected",
       "expired",
     ]);
-    expect(workspace.outcomeOptions.map((item) => item.value)).toEqual([
-      "none",
-      "rejected",
-      "partial",
-      "unknown",
-      "receipt",
-    ]);
     workspace.setSnapshot("expired");
     expect(workspace.attention()[0]).toMatchObject({
       title: "Expired",
       tone: "warning",
     });
-    expect(workspace.outcomeCopy.message).toContain("does not place trades");
   });
 
-  it("keeps labelled outcomes and the example strategy off the plan lifecycle", async () => {
+  it("keeps submit separate from approval and records a demo receipt", async () => {
     const workspace = await openWorkspace();
     await workspace.save(terms);
     await workspace.review();
     await workspace.approve();
-    workspace.setOutcome("receipt");
+    expect(workspace.currentOrder(workspace.selected!)).toBeUndefined();
+    await workspace.submit();
+    expect(workspace.currentOrder(workspace.selected!)?.status).toBe("UNKNOWN");
+    await workspace.reconcile();
+    expect(workspace.currentOrder(workspace.selected!)?.status).toBe("FILLED");
     expect(workspace.selected?.status).toBe("APPROVED");
-    expect(workspace.outcomeExample).toBe("receipt");
+    await expect(workspace.submit()).rejects.toThrow("verified receipt");
+  });
+
+  it("keeps the example strategy off the plan lifecycle", async () => {
+    const workspace = await openWorkspace();
+    await workspace.save(terms);
+    await workspace.review();
+    await workspace.approve();
     await workspace.setConflict(true);
     expect(workspace.plans).toHaveLength(1);
     expect(workspace.activity[0]).toMatchObject({
@@ -115,8 +118,8 @@ describe("Prototype workspace", () => {
       workspace.selected!.id,
       1,
     );
-    expect(workspace.outcomeExample).toBe("none");
     expect(workspace.selected?.status).toBe("DRAFT");
+    expect(workspace.currentOrder(workspace.selected!)).toBeUndefined();
   });
 
   it("edits only the selected plan and retains revision activity", async () => {

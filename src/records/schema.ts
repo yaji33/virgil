@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { PlanSchema } from "../plans/plan.js";
+import { OrderSchema } from "../execution/order.js";
 
 const IdentifierSchema = z.string().trim().min(1).max(128);
 const AssetSchema = z.string().regex(/^[A-Z0-9]{1,20}$/);
@@ -61,14 +62,18 @@ export const DatabaseSchema = z
     memberships: z.array(MembershipRecordSchema),
     sessions: z.array(SessionRecordSchema),
     plans: z.array(PlanSchema),
+    orders: z.array(OrderSchema).default([]),
     activity: z.array(ActivityRecordSchema),
   })
   .strict();
 
 export type AccountRecord = z.infer<typeof AccountRecordSchema>;
 export type WorkspaceRecord = z.infer<typeof WorkspaceRecordSchema>;
+export type MembershipRecord = z.infer<typeof MembershipRecordSchema>;
+export type SessionRecord = z.infer<typeof SessionRecordSchema>;
 export type ActivityRecord = z.infer<typeof ActivityRecordSchema>;
 export type Database = z.infer<typeof DatabaseSchema>;
+export type { Order } from "../execution/order.js";
 
 export function emptyDatabase(): Database {
   return {
@@ -77,6 +82,7 @@ export function emptyDatabase(): Database {
     memberships: [],
     sessions: [],
     plans: [],
+    orders: [],
     activity: [],
   };
 }

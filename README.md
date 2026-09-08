@@ -69,10 +69,11 @@ The domain code is organized into separate modules:
 | --- | --- |
 | `src/plans/` | Validated plan terms, source identity references, revisions, review, and approval transitions |
 | `src/auth/` | Demo sessions and hashed tokens; actor identity is derived from the session |
-| `src/records/` | Transactional persistence for workspaces, accounts, plans, and activity |
+| `src/records/` | Transactional persistence for workspaces, accounts, plans, orders, and activity. Local default is Postgres (PGlite); tests can use in-memory JSON |
 | `src/boundary/` | Authenticated workspace operations, account isolation, and revision checks |
 | `src/money/` | Exact decimal-string arithmetic for quote amounts |
 | `src/http/` | Local HTTP adapter used by the browser workspace |
+| `src/execution/` | Submit/reconcile gate and demo exchange adapter. Live Binance stays disabled |
 | `src/policy/` | Deterministic decisions based on mandate rules and supplied risk results |
 | `src/risk/` | Position-size and available-capital evaluation using supplied exposure |
 | `src/types/` | Shared mandate, proposal, risk-result, and decision schemas |
@@ -98,6 +99,7 @@ The plan lifecycle functions remain pure domain operations. The application boun
 | Language | TypeScript 5, strict checking |
 | Module configuration | ES modules, ES2022 target, Bundler resolution |
 | Runtime validation | Zod 3 |
+| Local database | PGlite (Postgres-compatible, file-backed under `data/virgil`) |
 | Tests | Vitest 2 |
 | Frontend | TypeScript, CSS, Vite 5 |
 | Browser tests | Playwright |
@@ -118,7 +120,7 @@ pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-Open `http://127.0.0.1:5173` to create, review, approve, and revise a plan. The page opens a local demo session with no Binance credentials and places no trades. Plans, activity, and the illustrative USDT balance are saved on this computer and survive refresh. The workspace includes a labelled capital-conflict simulation and labelled snapshot and execution examples.
+Open `http://127.0.0.1:5173` to create, review, approve, submit, and reconcile a plan. The page opens a local demo session with no Binance credentials. Approval does not place an order. Submit uses the demo adapter; reconcile records a labelled receipt without moving funds. Plans, orders, activity, and the illustrative USDT balance are stored in a local Postgres database (`data/virgil`) and survive refresh.
 
 For the command-line lifecycle example, run `pnpm demo:plans`.
 
@@ -155,15 +157,19 @@ Verified on September 8, 2026, using Node.js 22.20.0:
 | TypeScript check | Passed |
 | Plan tests | 19 passed |
 | Policy tests | 6 passed |
-| Workspace tests | 7 passed |
+| Workspace tests | 8 passed |
 | Boundary tests | 7 passed |
 | HTTP tests | 1 passed |
-| Unit total | 40 passed across 5 test files |
+| Execution tests | 14 passed |
+| SQL record tests | 3 passed |
+| Unit total | 58 passed across 7 test files |
 | Browser tests | 7 passed in installed Chrome, including a mobile viewport |
 
-The suite covers consumer and integration plan sources, revision-bound approval, approval invalidation, stale revisions, invalid transitions, input-copy behavior, decimal-string validation, asset and product restrictions, position limits, and risk-failure precedence.
+The suite covers consumer and integration plan sources, revision-bound approval, approval invalidation, stale revisions, invalid transitions, SQL revision CAS, persisted reload, input-copy behavior, decimal-string validation, asset and product restrictions, position limits, and risk-failure precedence.
 
-Browser tests cover revision and approval, capital-conflict resizing, labelled snapshot and execution examples, validation, escaped user input, keyboard dismissal, reload persistence, and mobile overflow. These tests do not establish live exchange integration or trading performance.
+Execution regressions cover durable attempts before adapter calls, concurrent submission blocking, rejection retries, uncertain responses, acknowledged demo-order recovery, retained execution terms, and reconciliation quantity and identity checks. An unresolved attempt blocks another submission even if the plan is revised.
+
+Browser tests cover revision and approval, capital-conflict resizing, demo submit and reconcile, labelled snapshot examples, validation, escaped user input, keyboard dismissal, reload persistence, and mobile overflow. These tests do not establish live exchange integration or trading performance.
 
 Reproduce the checks with:
 
