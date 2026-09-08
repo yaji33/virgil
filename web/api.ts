@@ -1,5 +1,6 @@
 import type { Order } from "../src/execution/order.js";
 import type { Plan, PlanTerms } from "../src/plans/plan.js";
+import type { PlanHistory } from "../src/plans/history.js";
 
 export interface Actor {
   userId: string;
@@ -19,14 +20,16 @@ export interface WorkspaceSnapshot {
   actor: Actor;
   workspace: {
     id: string;
-    account: { accountId: string; quoteAsset: string; balance: string };
+    account: { accountId: string; quoteAsset: string; balance: string; capturedAt?: string };
     exampleHold: string;
   };
   available: string;
+  reserved: string;
   environment: "DEMO" | "LIVE";
   plans: Plan[];
   orders: Order[];
   activity: Activity[];
+  planHistory: PlanHistory[];
 }
 
 export interface PlanRecords {
@@ -41,8 +44,18 @@ export interface PlanRecords {
   setExampleHold(enabled: boolean): Promise<WorkspaceSnapshot>;
 }
 
+export interface AuthRecords {
+  authConfig(): Promise<{
+    url: string;
+    publishableKey: string;
+    providers: ("google" | "github")[];
+  }>;
+  exchangeOAuth(accessToken: string): Promise<void>;
+  signOut(): Promise<void>;
+}
+
 class ApiError extends Error {
-  constructor(message: string) {
+  constructor(message: string, readonly status: number) {
     super(message);
     this.name = "ApiError";
   }
@@ -63,14 +76,23 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     ? (JSON.parse(text) as { error?: { message?: string } } & T)
     : ({} as { error?: { message?: string } } & T);
   if (!response.ok) {
-    throw new ApiError(body.error?.message ?? "Unable to update the workspace.");
+    throw new ApiError(body.error?.message ?? "Unable to update the workspace.", response.status);
   }
-  if (!text) throw new ApiError("The local workspace API did not respond.");
+  if (!text) throw new ApiError("The workspace API did not respond.", response.status);
   return body;
 }
 
-export function httpRecords(): PlanRecords {
+export function httpRecords(): PlanRecords & AuthRecords {
   return {
+    authConfig() {
+      return request("/api/auth/config");
+    },
+    async exchangeOAuth(accessToken) {
+      await request("/api/auth/exchange", {
+        method: "POST",
+        body: JSON.stringify({ accessToken }),
+      });
+    },
     async boot() {
       await request("/api/session", { method: "POST" });
       return request("/api/workspace");
@@ -126,5 +148,12 @@ export function httpRecords(): PlanRecords {
         body: JSON.stringify({ enabled }),
       });
     },
+    async signOut() {
+      await request("/api/auth/sign-out", { method: "POST" });
+    },
   };
+}
+
+export function needsAuthentication(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 401;
 }

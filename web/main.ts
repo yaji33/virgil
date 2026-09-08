@@ -1,12 +1,71 @@
 import "./style.css";
-import { httpRecords } from "./api.js";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { httpRecords, needsAuthentication, type PlanRecords } from "./api.js";
 import { PlanWorkspace } from "./model.js";
-import { isSnapshotState, workspaceView } from "./view.js";
+import { escape, isSnapshotState, workspaceView } from "./view.js";
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
 let page: "overview" | "plans" | "activity" = "overview";
 let workspace: PlanWorkspace;
 let editing: { id: string; revision: number } | undefined;
+const records = httpRecords();
+let authClient: SupabaseClient | undefined;
+let oauthProviders: ("google" | "github")[] = [];
+
+function renderAuth(message = ""): void {
+  const providerButton = (provider: "google" | "github") =>
+    `<button class="oauth-button" type="button" data-provider="${provider}"><span class="oauth-mark" aria-hidden="true">${provider === "google" ? "G" : "GH"}</span>Continue with ${provider === "google" ? "Google" : "GitHub"}</button>`;
+  app.innerHTML = `<main class="auth-page"><section class="auth-card">
+    <a class="brand auth-brand" href="/" aria-label="Virgil"><span class="brand-mark">V</span>virgil<span class="brand-period">.</span></a>
+    <span class="eyebrow">YOUR CLOUD WORKSPACE</span>
+    <h1>Continue to Virgil.</h1><p>Use a trusted identity to keep plans, approvals, and execution receipts tied to you. Your provider password is never shared with Virgil.</p>
+    <div class="oauth-actions">${oauthProviders.map(providerButton).join("")}</div>
+    <p id="auth-error" role="alert">${escape(message)}</p>
+    <p class="auth-note">An account is required for cloud storage and live execution. Local demo mode remains account-free.</p>
+  </section></main>`;
+}
+
+async function configureAuth(): Promise<void> {
+  const config = await records.authConfig();
+  oauthProviders = config.providers;
+  authClient = createClient(config.url, config.publishableKey, {
+    auth: {
+      flowType: "pkce",
+      detectSessionInUrl: false,
+      persistSession: true,
+      storage: window.sessionStorage,
+    },
+  });
+  const url = new URL(window.location.href);
+  const code = url.searchParams.get("code");
+  if (!code) {
+    renderAuth(url.searchParams.get("error_description") ?? "");
+    return;
+  }
+  const exchanged = await authClient.auth.exchangeCodeForSession(code);
+  const existing = exchanged.data.session
+    ? undefined
+    : await authClient.auth.getSession();
+  const session = exchanged.data.session ?? existing?.data.session;
+  if (!session) {
+    window.history.replaceState({}, "", url.pathname);
+    renderAuth(
+      exchanged.error?.message ??
+        existing?.error?.message ??
+        "OAuth sign-in could not be completed.",
+    );
+    return;
+  }
+  await records.exchangeOAuth(session.access_token);
+  await authClient.auth.signOut({ scope: "local" });
+  window.history.replaceState({}, "", url.pathname);
+  await openWorkspace(records);
+}
+
+async function openWorkspace(source: PlanRecords): Promise<void> {
+  workspace = await PlanWorkspace.open(source);
+  render();
+}
 
 function render(focusAction?: string): void {
   app.innerHTML = workspaceView(workspace, page);
@@ -44,7 +103,7 @@ function openEditor(edit = false): void {
 }
 
 app.addEventListener("submit", (event) => {
-  if (!(event.target instanceof HTMLFormElement)) return;
+  if (!(event.target instanceof HTMLFormElement) || event.target.id !== "plan-form") return;
   event.preventDefault();
   const data = new FormData(event.target);
   const title = String(data.get("title") ?? "").trim();
@@ -105,6 +164,10 @@ app.addEventListener("click", (event) => {
   if (!target) return;
   if (target.matches(".brand")) {
     event.preventDefault();
+    if (!workspace) {
+      renderAuth();
+      return;
+    }
     page = "overview";
     render();
     return;
@@ -133,6 +196,10 @@ app.addEventListener("click", (event) => {
     return;
   }
   const action = target.dataset.action;
+  if (action === "signout") {
+    void records.signOut().finally(() => renderAuth("Signed out."));
+    return;
+  }
   if (action === "new") {
     openEditor();
     return;
@@ -192,12 +259,30 @@ app.addEventListener("click", (event) => {
   })();
 });
 
-void PlanWorkspace.open(httpRecords())
-  .then((opened) => {
-    workspace = opened;
-    render();
-  })
+app.addEventListener("click", (event) => {
+  const target = (event.target as Element).closest<HTMLElement>("[data-provider]");
+  const provider = target?.dataset.provider;
+  if (!authClient || (provider !== "google" && provider !== "github")) return;
+  void authClient.auth.signInWithOAuth({
+    provider,
+    options: { redirectTo: `${window.location.origin}/` },
+  }).then(({ error }) => {
+    if (error) renderAuth(error.message);
+  });
+});
+
+void openWorkspace(records)
   .catch((error: unknown) => {
+    if (needsAuthentication(error)) {
+      void configureAuth().catch((authError: unknown) => {
+        renderAuth(
+          authError instanceof Error
+            ? authError.message
+            : "Authentication is unavailable.",
+        );
+      });
+      return;
+    }
     app.innerHTML = `<main class="boot-error"><h1>Workspace unavailable</h1><p>${
       error instanceof Error ? error.message : "Unable to open the local workspace."
     }</p></main>`;

@@ -3,6 +3,7 @@ import type { Order } from "../src/execution/order.js";
 import { orderForRevision as executionOrderForRevision } from "../src/execution/gate.js";
 import { PlanTermsSchema, type Plan, type PlanTerms } from "../src/plans/plan.js";
 import type { Activity, Actor, PlanRecords, WorkspaceSnapshot } from "./api.js";
+import type { PlanHistory } from "../src/plans/history.js";
 
 export type { Activity, Actor, Order };
 export { formatQuote, subtractQuote };
@@ -73,9 +74,14 @@ export class PlanWorkspace {
   plans: Plan[] = [];
   orders: Order[] = [];
   activity: Activity[] = [];
+  planHistory: PlanHistory[] = [];
   selectedId: string | undefined;
   actor: Actor | undefined;
   available = "500";
+  reserved = "0";
+  balance = "500";
+  exampleHold = "0";
+  capturedAt: string | undefined;
   environment: "DEMO" | "LIVE" = "DEMO";
   snapshot: SnapshotState = "current";
 
@@ -92,7 +98,7 @@ export class PlanWorkspace {
   }
 
   get conflict(): boolean {
-    return this.available === "150";
+    return this.exampleHold !== "0";
   }
 
   get snapshotReady(): boolean {
@@ -111,15 +117,22 @@ export class PlanWorkspace {
   }
 
   currentOrder(plan: Plan): Order | undefined {
-    return orderForRevision(this.orders, plan.id, plan.revision);
+    return orderForRevision(this.orders, plan.id, plan.revision)
+      ?? this.orders
+        .filter((order) => order.planId === plan.id)
+        .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))[0];
   }
 
   exceedsBalance(plan: Plan): boolean {
+    const open = orderForRevision(this.orders, plan.id, plan.revision);
+    if (open?.status === "UNKNOWN" || open?.status === "PARTIAL") return false;
     return exceedsQuote(plan.terms.quoteAmount, this.available);
   }
 
   remainingAfter(plan: Plan): string | undefined {
     if (!this.snapshotReady) return undefined;
+    const open = orderForRevision(this.orders, plan.id, plan.revision);
+    if (open?.status === "UNKNOWN" || open?.status === "PARTIAL") return this.available;
     return subtractQuote(this.available, plan.terms.quoteAmount);
   }
 
@@ -129,7 +142,7 @@ export class PlanWorkspace {
 
   canSubmit(plan: Plan): boolean {
     if (plan.status !== "APPROVED" || !this.canApprove(plan)) return false;
-    const order = this.currentOrder(plan);
+    const order = orderForRevision(this.orders, plan.id, plan.revision);
     return !order || order.status === "REJECTED";
   }
 
@@ -231,7 +244,7 @@ export class PlanWorkspace {
       );
     if (this.exceedsBalance(plan))
       throw new Error(
-        "The amount exceeds the illustrative available balance. Adjust the plan before approving.",
+        "The amount exceeds the available USDT balance. Adjust the plan before approving.",
       );
     await this.records.approve(plan.id, plan.revision);
     await this.refresh();
@@ -290,10 +303,15 @@ export class PlanWorkspace {
   private apply(state: WorkspaceSnapshot): void {
     this.actor = state.actor;
     this.available = state.available;
+    this.reserved = state.reserved;
+    this.balance = state.workspace.account.balance;
+    this.exampleHold = state.workspace.exampleHold;
+    this.capturedAt = state.workspace.account.capturedAt;
     this.environment = state.environment;
     this.plans = state.plans;
     this.orders = state.orders;
     this.activity = state.activity;
+    this.planHistory = state.planHistory;
     if (!this.selectedId || !this.plans.some((plan) => plan.id === this.selectedId)) {
       this.selectedId = this.plans[0]?.id;
     }
