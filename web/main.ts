@@ -1,10 +1,12 @@
 import "./style.css";
+import { httpRecords } from "./api.js";
 import { PlanWorkspace } from "./model.js";
 import { isOutcomeExample, isSnapshotState, workspaceView } from "./view.js";
 
-const workspace = new PlanWorkspace();
-let page: "overview" | "plans" | "activity" = "overview";
 const app = document.querySelector<HTMLDivElement>("#app")!;
+let page: "overview" | "plans" | "activity" = "overview";
+let workspace: PlanWorkspace;
+let editing: { id: string; revision: number } | undefined;
 
 function render(focusAction?: string): void {
   app.innerHTML = workspaceView(workspace, page);
@@ -14,7 +16,10 @@ function render(focusAction?: string): void {
       ?.focus();
 }
 
-let editing: { id: string; revision: number } | undefined;
+function announce(message: string): void {
+  document.querySelector("#announcement")!.textContent = message;
+}
+
 function openEditor(edit = false): void {
   const plan = edit ? workspace.selected : undefined;
   editing = plan ? { id: plan.id, revision: plan.revision } : undefined;
@@ -38,10 +43,6 @@ function openEditor(edit = false): void {
   document.querySelector<HTMLInputElement>("#title")!.focus();
 }
 
-function announce(message: string): void {
-  document.querySelector("#announcement")!.textContent = message;
-}
-
 app.addEventListener("submit", (event) => {
   if (!(event.target instanceof HTMLFormElement)) return;
   event.preventDefault();
@@ -49,8 +50,8 @@ app.addEventListener("submit", (event) => {
   const title = String(data.get("title") ?? "").trim();
   const baseAsset = String(data.get("asset"));
   const quoteAmount = String(data.get("amount") ?? "").trim();
-  try {
-    workspace.save(
+  void workspace
+    .save(
       {
         title,
         baseAsset,
@@ -64,23 +65,25 @@ app.addEventListener("submit", (event) => {
       },
       editing?.id,
       editing?.revision,
-    );
-    document.querySelector<HTMLDialogElement>("#plan-dialog")!.close();
-    page = "plans";
-    render("review");
-    announce(
-      editing
-        ? "Plan revised. Previous approval cleared."
-        : "Draft created. Ready for review.",
-    );
-  } catch {
-    document.querySelector("#form-error")!.textContent = !title
-      ? "Give your plan a name."
-      : "Enter a positive decimal amount without commas or exponent notation (up to 20 integer and 18 decimal digits).";
-    document
-      .querySelector<HTMLInputElement>(!title ? "#title" : "#amount")!
-      .focus();
-  }
+    )
+    .then(() => {
+      document.querySelector<HTMLDialogElement>("#plan-dialog")!.close();
+      page = "plans";
+      render("review");
+      announce(
+        editing
+          ? "Plan revised. Previous approval cleared."
+          : "Draft created. Ready for review.",
+      );
+    })
+    .catch(() => {
+      document.querySelector("#form-error")!.textContent = !title
+        ? "Give your plan a name."
+        : "Enter a positive decimal amount without commas or exponent notation (up to 20 integer and 18 decimal digits).";
+      document
+        .querySelector<HTMLInputElement>(!title ? "#title" : "#amount")!
+        .focus();
+    });
 });
 
 app.addEventListener("change", (event) => {
@@ -139,47 +142,62 @@ app.addEventListener("click", (event) => {
       ?.focus();
     return;
   }
-  try {
-    switch (target.dataset.action) {
-      case "new":
-        openEditor();
-        return;
-      case "edit":
-        openEditor(true);
-        return;
-      case "close":
-        document.querySelector<HTMLDialogElement>("#plan-dialog")!.close();
-        return;
-      case "scenario":
-        workspace.setConflict(!workspace.conflict);
-        render("scenario");
-        announce(
-          workspace.conflict
-            ? "Conflict simulation enabled. 150 USDT available in example."
-            : "Conflict simulation disabled.",
-        );
-        return;
-      case "review":
-        workspace.review();
-        render("approve");
-        announce("Plan in review. Check the terms before approving.");
-        return;
-      case "approve":
-        workspace.approve();
-        render("edit");
-        announce("Terms approved. No order submitted.");
-        return;
-      case "resize":
-        workspace.resize();
-        render("review");
-        announce("Amount adjusted. Review the new revision.");
-        return;
-    }
-  } catch (error) {
-    announce(
-      error instanceof Error ? error.message : "Unable to update the plan.",
-    );
+  const action = target.dataset.action;
+  if (action === "new") {
+    openEditor();
+    return;
   }
+  if (action === "edit") {
+    openEditor(true);
+    return;
+  }
+  if (action === "close") {
+    document.querySelector<HTMLDialogElement>("#plan-dialog")!.close();
+    return;
+  }
+  void (async () => {
+    try {
+      switch (action) {
+        case "scenario":
+          await workspace.setConflict(!workspace.conflict);
+          render("scenario");
+          announce(
+            workspace.conflict
+              ? "Conflict simulation enabled. 150 USDT available in example."
+              : "Conflict simulation disabled.",
+          );
+          return;
+        case "review":
+          await workspace.review();
+          render("approve");
+          announce("Plan in review. Check the terms before approving.");
+          return;
+        case "approve":
+          await workspace.approve();
+          render("edit");
+          announce("Terms approved. No order submitted.");
+          return;
+        case "resize":
+          await workspace.resize();
+          render("review");
+          announce("Amount adjusted. Review the new revision.");
+          return;
+      }
+    } catch (error) {
+      announce(
+        error instanceof Error ? error.message : "Unable to update the plan.",
+      );
+    }
+  })();
 });
 
-render();
+void PlanWorkspace.open(httpRecords())
+  .then((opened) => {
+    workspace = opened;
+    render();
+  })
+  .catch((error: unknown) => {
+    app.innerHTML = `<main class="boot-error"><h1>Workspace unavailable</h1><p>${
+      error instanceof Error ? error.message : "Unable to open the local workspace."
+    }</p></main>`;
+  });

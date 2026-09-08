@@ -5,6 +5,6 @@
     "noEmit": true,
     "types": ["vite/client"]
   },
-  "include": ["./**/*.ts", "../src/plans/**/*.ts"],
-  "exclude": ["../node_modules", "dist"]
+  "include": ["./**/*.ts", "../src/plans/**/*.ts", "../src/money/**/*.ts"],
+  "exclude": ["../node_modules", "dist", "./vite.config.ts"]
 }

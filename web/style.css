@@ -15,6 +15,11 @@
 body {
   margin: 0;
 }
+.boot-error {
+  max-width: 520px;
+  margin: 12vh auto;
+  padding: 0 24px;
+}
 button,
 input,
 select {

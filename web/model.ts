@@ -1,14 +1,9 @@
-import {
-  approvePlan,
-  createPlan,
-  requestPlanReview,
-  revisePlan,
-} from "../src/plans/lifecycle.js";
-import {
-  PlanTermsSchema,
-  type Plan,
-  type PlanTerms,
-} from "../src/plans/plan.js";
+import { exceedsQuote, formatQuote, subtractQuote } from "../src/money/decimal.js";
+import { PlanTermsSchema, type Plan, type PlanTerms } from "../src/plans/plan.js";
+import type { Activity, Actor, PlanRecords, WorkspaceSnapshot } from "./api.js";
+
+export type { Activity, Actor };
+export { formatQuote, subtractQuote };
 
 export type SnapshotState =
   | "current"
@@ -23,15 +18,6 @@ export type OutcomeExample =
   | "partial"
   | "unknown"
   | "receipt";
-
-export interface Activity {
-  id: string;
-  planId: string;
-  title: string;
-  revision: number;
-  message: string;
-  time: string;
-}
 
 export interface AttentionItem {
   id: string;
@@ -115,40 +101,29 @@ const OUTCOME_COPY: Record<
   },
 };
 
-export function quoteUnits(amount: string): bigint {
-  const [whole, fraction = ""] = amount.split(".");
-  return BigInt(whole) * 10n ** 18n + BigInt(fraction.padEnd(18, "0"));
-}
-
-export function formatQuote(units: bigint): string {
-  const negative = units < 0n;
-  const absolute = negative ? -units : units;
-  const whole = absolute / 10n ** 18n;
-  const fraction = (absolute % 10n ** 18n)
-    .toString()
-    .padStart(18, "0")
-    .replace(/0+$/, "");
-  return `${negative ? "-" : ""}${whole}${fraction ? `.${fraction}` : ""}`;
-}
-
-export function subtractQuote(left: string, right: string): string {
-  return formatQuote(quoteUnits(left) - quoteUnits(right));
-}
-
 export class PlanWorkspace {
   plans: Plan[] = [];
   activity: Activity[] = [];
   selectedId: string | undefined;
-  conflict = false;
+  actor: Actor | undefined;
+  available = "500";
   snapshot: SnapshotState = "current";
   outcomeExample: OutcomeExample = "none";
+
+  constructor(private readonly records: PlanRecords) {}
+
+  static async open(records: PlanRecords): Promise<PlanWorkspace> {
+    const workspace = new PlanWorkspace(records);
+    await workspace.boot();
+    return workspace;
+  }
 
   get selected(): Plan | undefined {
     return this.plans.find((plan) => plan.id === this.selectedId);
   }
 
-  get available(): string {
-    return this.conflict ? "150" : "500";
+  get conflict(): boolean {
+    return this.available === "150";
   }
 
   get snapshotReady(): boolean {
@@ -178,7 +153,7 @@ export class PlanWorkspace {
   }
 
   exceedsBalance(plan: Plan): boolean {
-    return quoteUnits(plan.terms.quoteAmount) > quoteUnits(this.available);
+    return exceedsQuote(plan.terms.quoteAmount, this.available);
   }
 
   remainingAfter(plan: Plan): string | undefined {
@@ -234,34 +209,32 @@ export class PlanWorkspace {
     return items;
   }
 
-  save(terms: PlanTerms, editingId?: string, expectedRevision?: number): void {
+  async save(terms: PlanTerms, editingId?: string, expectedRevision?: number): Promise<void> {
     const validated = PlanTermsSchema.parse(terms);
-    const existing = this.plans.find((plan) => plan.id === editingId);
-    if (editingId && !existing)
-      throw new Error("This plan is no longer available.");
     this.outcomeExample = "none";
-    const plan = existing
-      ? revisePlan(existing, expectedRevision ?? -1, validated)
-      : createPlan({
-          workspaceId: "simulation",
-          source: { kind: "CONSUMER", userId: "demo-user" },
-          terms: validated,
-        });
-    this.record(
-      plan,
-      existing ? "Terms revised. Previous approval cleared." : "Draft created.",
-    );
+    if (editingId) {
+      const existing = this.plans.find((plan) => plan.id === editingId);
+      if (!existing) throw new Error("This plan is no longer available.");
+      const plan = await this.records.revise(
+        editingId,
+        expectedRevision ?? -1,
+        validated,
+      );
+      this.selectedId = plan.id;
+    } else {
+      const plan = await this.records.create(validated);
+      this.selectedId = plan.id;
+    }
+    await this.refresh();
   }
 
-  review(): void {
+  async review(): Promise<void> {
     const plan = this.requireSelected();
-    this.record(
-      requestPlanReview(plan, plan.revision),
-      "Ready for your review.",
-    );
+    await this.records.review(plan.id, plan.revision);
+    await this.refresh();
   }
 
-  approve(): void {
+  async approve(): Promise<void> {
     const plan = this.requireSelected();
     if (!this.snapshotReady)
       throw new Error(
@@ -272,15 +245,13 @@ export class PlanWorkspace {
         "The amount exceeds the illustrative available balance. Adjust the plan before approving.",
       );
     this.outcomeExample = "none";
-    this.record(
-      approvePlan(plan, plan.revision, "demo-user"),
-      "Terms approved in simulation. No order submitted.",
-    );
+    await this.records.approve(plan.id, plan.revision);
+    await this.refresh();
   }
 
-  resize(): void {
+  async resize(): Promise<void> {
     const plan = this.requireSelected();
-    this.save(
+    await this.save(
       {
         ...plan.terms,
         quoteAmount: this.available,
@@ -291,18 +262,8 @@ export class PlanWorkspace {
     );
   }
 
-  setConflict(enabled: boolean): void {
-    this.conflict = enabled;
-    if (!enabled) return;
-    this.activity.unshift({
-      id: globalThis.crypto.randomUUID(),
-      planId: EXAMPLE_STRATEGY.id,
-      title: EXAMPLE_STRATEGY.title,
-      revision: 1,
-      message:
-        "Example strategy reserved 350 USDT in this illustration. No funds are locked.",
-      time: new Date().toISOString(),
-    });
+  async setConflict(enabled: boolean): Promise<void> {
+    this.apply(await this.records.setExampleHold(enabled));
   }
 
   setSnapshot(snapshot: SnapshotState): void {
@@ -313,23 +274,26 @@ export class PlanWorkspace {
     this.outcomeExample = outcome;
   }
 
+  private async boot(): Promise<void> {
+    this.apply(await this.records.boot());
+  }
+
+  private async refresh(): Promise<void> {
+    this.apply(await this.records.read());
+  }
+
+  private apply(state: WorkspaceSnapshot): void {
+    this.actor = state.actor;
+    this.available = state.available;
+    this.plans = state.plans;
+    this.activity = state.activity;
+    if (!this.selectedId || !this.plans.some((plan) => plan.id === this.selectedId)) {
+      this.selectedId = this.plans[0]?.id;
+    }
+  }
+
   private requireSelected(): Plan {
     if (!this.selected) throw new Error("Select a plan first.");
     return this.selected;
-  }
-
-  private record(plan: Plan, message: string): void {
-    const index = this.plans.findIndex((item) => item.id === plan.id);
-    if (index === -1) this.plans.push(plan);
-    else this.plans[index] = plan;
-    this.selectedId = plan.id;
-    this.activity.unshift({
-      id: globalThis.crypto.randomUUID(),
-      planId: plan.id,
-      title: plan.terms.title,
-      revision: plan.revision,
-      message,
-      time: new Date().toISOString(),
-    });
   }
 }
