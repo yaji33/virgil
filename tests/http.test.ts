@@ -4,6 +4,7 @@ import { WorkspaceBoundary } from "../src/boundary/workspace.js";
 import { handleApi } from "../src/http/handler.js";
 import { RecordStore } from "../src/records/store.js";
 import type { PlanTerms } from "../src/plans/plan.js";
+import { SupabaseAuth } from "../src/auth/supabase.js";
 
 const terms: PlanTerms = {
   title: "BTC purchase",
@@ -63,6 +64,37 @@ describe("Workspace HTTP boundary", () => {
       expect(body.plans[0]?.terms.accountId).toBe("demo-account");
     } finally {
       await server.close();
+    }
+  });
+
+  it("exchanges a verified OAuth token for an HttpOnly Virgil session", async () => {
+    const boundary = new WorkspaceBoundary(RecordStore.memory());
+    const auth = SupabaseAuth.fromEnv({
+      SUPABASE_URL: "https://project.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "sb_publishable_test",
+      VIRGIL_OAUTH_PROVIDERS: "google,github",
+    }, async () => new Response(JSON.stringify({
+      id: "f08666a1-d106-4e9b-8792-18f8ed086af7",
+    }), { status: 200, headers: { "Content-Type": "application/json" } }))!;
+    const server = createServer((req, res) => {
+      void handleApi(req, res, boundary, auth);
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("No listen address");
+    try {
+      const config = await fetch(`http://127.0.0.1:${address.port}/api/auth/config`);
+      await expect(config.json()).resolves.toMatchObject({ providers: ["google", "github"] });
+      const response = await fetch(`http://127.0.0.1:${address.port}/api/auth/exchange`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accessToken: "verified-access-token" }),
+      });
+      expect(response.status).toBe(200);
+      expect(response.headers.get("set-cookie")).toContain("HttpOnly");
+      expect(response.headers.get("set-cookie")).toContain("SameSite=Lax");
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     }
   });
 });

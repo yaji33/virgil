@@ -26,7 +26,7 @@ describe("Prototype workspace", () => {
     await workspace.review();
     await workspace.setConflict(true);
     await expect(workspace.approve()).rejects.toThrow(
-      "illustrative available balance",
+      "available USDT balance",
     );
     expect(workspace.selected?.status).toBe("IN_REVIEW");
     await workspace.resize();
@@ -95,9 +95,15 @@ describe("Prototype workspace", () => {
     expect(workspace.currentOrder(workspace.selected!)).toBeUndefined();
     await workspace.submit();
     expect(workspace.currentOrder(workspace.selected!)?.status).toBe("UNKNOWN");
+    expect(workspace.reserved).toBe("250");
+    expect(workspace.available).toBe("250");
+    expect(workspace.balance).toBe("500");
     await workspace.reconcile();
     expect(workspace.currentOrder(workspace.selected!)?.status).toBe("FILLED");
     expect(workspace.selected?.status).toBe("APPROVED");
+    expect(workspace.reserved).toBe("0");
+    expect(workspace.available).toBe("250");
+    expect(workspace.balance).toBe("250");
     await expect(workspace.submit()).rejects.toThrow("verified receipt");
   });
 
@@ -120,6 +126,28 @@ describe("Prototype workspace", () => {
     );
     expect(workspace.selected?.status).toBe("DRAFT");
     expect(workspace.currentOrder(workspace.selected!)).toBeUndefined();
+  });
+
+  it("keeps an unresolved order reconcitable after the plan is revised", async () => {
+    const workspace = await openWorkspace();
+    await workspace.save(terms);
+    await workspace.review();
+    await workspace.approve();
+    await workspace.submit();
+    await workspace.save(
+      { ...terms, quoteAmount: "100" },
+      workspace.selected!.id,
+      1,
+    );
+    expect(workspace.selected?.status).toBe("DRAFT");
+    expect(workspace.currentOrder(workspace.selected!)?.status).toBe("UNKNOWN");
+    expect(workspace.attention()[0]).toMatchObject({
+      title: "BTC purchase",
+      tone: "attention",
+    });
+    await workspace.reconcile();
+    expect(workspace.currentOrder(workspace.selected!)?.status).toBe("FILLED");
+    expect(workspace.currentOrder(workspace.selected!)?.approvedPlan?.terms.quoteAmount).toBe("250");
   });
 
   it("edits only the selected plan and retains revision activity", async () => {

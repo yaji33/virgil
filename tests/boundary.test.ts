@@ -63,6 +63,37 @@ describe("Authenticated workspace boundary", () => {
     }
   });
 
+  it("retains every lifecycle snapshot and approval", async () => {
+    const app = boundary();
+    const session = await app.openSession();
+    const first = await app.create(session.token, terms);
+    await app.review(session.token, first.id, 1);
+    await app.approve(session.token, first.id, 1);
+    await app.revise(session.token, first.id, 1, { ...terms, quoteAmount: "200" });
+    await app.review(session.token, first.id, 2);
+    await app.approve(session.token, first.id, 2);
+    const history = (await app.read(session.token)).planHistory;
+    expect(history.map((entry) => [entry.plan.revision, entry.plan.status])).toEqual([
+      [1, "DRAFT"], [1, "IN_REVIEW"], [1, "APPROVED"],
+      [2, "DRAFT"], [2, "IN_REVIEW"], [2, "APPROVED"],
+    ]);
+    expect(history[2].plan.terms.quoteAmount).toBe("250");
+    expect(history[5]).toMatchObject({
+      actorId: session.actor.userId,
+      plan: { approval: { userId: session.actor.userId, revision: 2 } },
+    });
+  });
+
+  it("rejects changes to immutable history", async () => {
+    const store = RecordStore.memory();
+    const app = boundary(store);
+    const session = await app.openSession();
+    await app.create(session.token, terms);
+    await expect(store.transaction((db) => {
+      db.planHistory[0].plan.terms.quoteAmount = "1";
+    })).rejects.toThrow("planHistory records are immutable");
+  });
+
   it("rejects stale revisions when two writes race", async () => {
     const app = boundary();
     const session = await app.openSession();
@@ -107,7 +138,7 @@ describe("Authenticated workspace boundary", () => {
     await app.review(session.token, plan.id, 1);
     await app.setExampleHold(session.token, true);
     await expect(app.approve(session.token, plan.id, 1)).rejects.toThrow(
-      "illustrative available balance",
+      "available USDT balance",
     );
   });
 
