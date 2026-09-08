@@ -94,6 +94,8 @@ The plan lifecycle functions are local domain operations. They are not an authen
 | Module configuration | ES modules, ES2022 target, Bundler resolution |
 | Runtime validation | Zod 3 |
 | Tests | Vitest 2 |
+| Frontend | TypeScript, CSS, Vite 5 |
+| Browser tests | Playwright |
 | Development scripts | tsx 4 |
 | Package management | pnpm with a committed lockfile |
 | Target exchange integration | Binance Agent OS |
@@ -108,8 +110,12 @@ Install Node.js 22+ and pnpm, then:
 git clone https://github.com/yaji33/virgil.git
 cd virgil
 pnpm install --frozen-lockfile
-pnpm demo:plans
+pnpm dev
 ```
+
+Open `http://127.0.0.1:5173` to create, review, approve, and revise a plan. The workspace includes a labelled capital-conflict simulation, session activity, and labelled snapshot and execution examples. It uses a guided form, requires no credentials, and places no trades. Plans clear when the page reloads.
+
+For the command-line lifecycle example, run `pnpm demo:plans`.
 
 The plan demo creates an integration-sourced purchase, moves it through review and approval, and changes the amount to demonstrate approval invalidation. It requires no Binance credentials.
 
@@ -125,12 +131,15 @@ These demonstrate an allowed purchase, a disallowed asset, a human-approval thre
 
 | Command | Purpose |
 | --- | --- |
+| `pnpm dev` | Start the local browser workspace |
+| `pnpm preview` | Preview the built frontend on port 4173 |
 | `pnpm demo:plans` | Run the local plan lifecycle example |
 | `pnpm demo` | Run the deterministic policy examples |
 | `pnpm lint` | Check TypeScript without emitting files |
 | `pnpm test` | Run the test suite once |
 | `pnpm test:watch` | Run tests in watch mode |
-| `pnpm build` | Emit JavaScript and declarations into `dist/` |
+| `pnpm build` | Emit the core into `dist/` and bundle the frontend into `web/dist/` |
+| `pnpm test:e2e` | Run browser workflow tests |
 
 ## Tests
 
@@ -141,11 +150,13 @@ Verified on September 8, 2026, using Node.js 22.20.0:
 | TypeScript check | Passed |
 | Plan tests | 19 passed |
 | Policy tests | 6 passed |
-| Total | 25 passed across 2 test files |
+| Workspace tests | 7 passed |
+| Unit total | 32 passed across 3 test files |
+| Browser tests | 6 passed in installed Chrome, including a mobile viewport |
 
 The suite covers consumer and integration plan sources, revision-bound approval, approval invalidation, stale revisions, invalid transitions, input-copy behavior, decimal-string validation, asset and product restrictions, position limits, and risk-failure precedence.
 
-These are domain tests. They do not establish live exchange integration, durable concurrency control, or trading performance.
+Browser tests cover revision and approval, capital-conflict resizing, labelled snapshot and execution examples, validation, escaped user input, keyboard dismissal, and mobile overflow. These tests do not establish live exchange integration, durable concurrency control, or trading performance.
 
 Reproduce the checks with:
 
@@ -153,6 +164,8 @@ Reproduce the checks with:
 pnpm lint
 pnpm test
 ```
+
+Install the browser once with `pnpm exec playwright install chromium`, then run `pnpm test:e2e`. To use an installed Chrome instead, set `VIRGIL_BROWSER_CHANNEL=chrome` in your shell before running the tests. For PowerShell: `$env:VIRGIL_BROWSER_CHANNEL = 'chrome'`.
 
 ## Contributing
 
